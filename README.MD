@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="logo.png" alt="MagnusChessX Thinking logo" width="560" height="315">
+  <img src="logo.png" alt="MagnusChessX Thinking logo" width="760">
 </p>
 
 <p align="center">
