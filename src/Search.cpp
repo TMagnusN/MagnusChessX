@@ -4610,6 +4610,39 @@ struct IterativeWorkerResult {
     std::vector<RootLine> lines{};
 };
 
+[[nodiscard]] bool has_worker_best(
+    const IterativeWorkerResult& result
+) noexcept {
+    return result.best.depth > 0 && !move_is_none(result.best.best_move);
+}
+
+void remember_exact_result(
+    IterativeWorkerResult& exact,
+    const IterativeWorkerResult& candidate
+) {
+    if (candidate.score_bound != memory::BOUND_EXACT ||
+        !has_worker_best(candidate)) {
+        return;
+    }
+
+    if (!has_worker_best(exact) ||
+        candidate.best.depth >= exact.best.depth) {
+        exact = candidate;
+    }
+}
+
+void prefer_exact_result(
+    IterativeWorkerResult& result,
+    const IterativeWorkerResult& exact
+) {
+    if ((result.score_bound == memory::BOUND_EXACT && has_worker_best(result)) ||
+        !has_worker_best(exact)) {
+        return;
+    }
+
+    result = exact;
+}
+
 [[nodiscard]] bool pv_move_is_legal(
     const Position& pos,
     const memory::Memory& mem,
@@ -5246,6 +5279,7 @@ void emit_root_lines_info(
     Searcher::clock::time_point search_start
 ) {
     IterativeWorkerResult result{};
+    IterativeWorkerResult exact_result{};
     SearchResult best{};
     Move hint_move = 0;
     Position keyed_root = local_root;
@@ -5429,6 +5463,7 @@ void emit_root_lines_info(
             best.tb_hits = total_tb_hits;
             hint_move = current.best_move;
             capture_completed_single_result(result, best, searcher, current_score_bound);
+            remember_exact_result(exact_result, result);
         }
 
         if (root_msv_enabled(searcher.limits) && !move_is_none(current.best_move)) {
@@ -5587,6 +5622,7 @@ void emit_root_lines_info(
 
     searcher.publish_nodes();
     searcher.publish_tb_hits();
+    prefer_exact_result(result, exact_result);
     if (move_is_none(result.best.best_move) && !move_is_none(fallback_best_move)) {
         result.best.best_move = fallback_best_move;
         result.best.pv[0] = fallback_best_move;
@@ -5641,6 +5677,7 @@ void emit_root_lines_info(
         );
 
     IterativeWorkerResult result{};
+    IterativeWorkerResult exact_result{};
     SearchResult best{};
     Move hint_move = 0;
     Position keyed_root = local_root;
@@ -5954,6 +5991,7 @@ void emit_root_lines_info(
                 result.pv_length = 0;
                 result.lines.clear();
             }
+            remember_exact_result(exact_result, result);
         }
 
         if (root_msv_enabled(searcher.limits) &&
@@ -6159,6 +6197,7 @@ void emit_root_lines_info(
 
     searcher.publish_nodes();
     searcher.publish_tb_hits();
+    prefer_exact_result(result, exact_result);
     if (move_is_none(result.best.best_move) && !move_is_none(fallback_best_move)) {
         result.best.best_move = fallback_best_move;
         result.best.pv[0] = fallback_best_move;
