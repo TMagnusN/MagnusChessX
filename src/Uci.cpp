@@ -326,9 +326,9 @@ void display_position_snapshot(
     std::string_view changed = {}
 ) {
     if (!changed.empty())
-        out << "changed -> " << changed << '\n';
-    out << "pos -> " << display_fen(pos) << '\n';
-    out << "hash -> " << pos.key << " (" << display_key_hex(pos.key) << ")\n";
+        out << "info string changed -> " << changed << '\n';
+    out << "info string pos -> " << display_fen(pos) << '\n';
+    out << "info string hash -> " << pos.key << " (" << display_key_hex(pos.key) << ")\n";
 }
 
 void display_position(const Position& pos, std::ostream& out) {
@@ -826,7 +826,7 @@ struct UciSession {
     Position pos{};
     PositionHistory position_history{};
     timeman::TimeManager time_manager{};
-    bool enable_ponder = true;
+    bool enable_ponder = false;
     bool full_pv = false;
     bool use_msv_smp = false;
     bool msv_info = false;
@@ -934,11 +934,7 @@ struct UciSession {
             << timeman::DEFAULT_MOVE_OVERHEAD_MS
             << " min " << timeman::MIN_MOVE_OVERHEAD_MS
             << " max " << timeman::MAX_MOVE_OVERHEAD_MS << "\n";
-        out << "option name Clear Hash type button\n";
-        out << "option name Ponder type check default true\n";
-        out << "option name FullPV type check default false\n";
-        out << "option name UseMsvSmp type check default false\n";
-        out << "option name MsvInfo type check default false\n";
+        out << "option name Ponder type check default false\n";
         out << "option name SyzygyPath type string default <empty>\n";
         out << "option name SyzygyProbeDepth type spin default "
             << syzygy::DEFAULT_PROBE_DEPTH
@@ -1068,9 +1064,6 @@ struct UciSession {
                 contempt = clamped;
             }
         }
-        else if (name == "Clear Hash") {
-            memory::memory_clear_hash(mem);
-        }
         else if (name == "Move Overhead") {
             int parsed_overhead = 0;
             if (parse_int(value, parsed_overhead))
@@ -1080,21 +1073,6 @@ struct UciSession {
             bool parsed = false;
             if (parse_bool(value, parsed))
                 enable_ponder = parsed;
-        }
-        else if (name == "FullPV") {
-            bool parsed = false;
-            if (parse_bool(value, parsed))
-                full_pv = parsed;
-        }
-        else if (name == "UseMsvSmp") {
-            bool parsed = false;
-            if (parse_bool(value, parsed))
-                use_msv_smp = parsed;
-        }
-        else if (name == "MsvInfo") {
-            bool parsed = false;
-            if (parse_bool(value, parsed))
-                msv_info = parsed;
         }
         else if (name == "SyzygyPath") {
             syzygy_path = value == "<empty>" ? std::string{} : value;
@@ -1436,7 +1414,7 @@ struct UciSession {
             const std::string_view command = command_starts_with(line, "hash") ? "hash" : "key";
             if (!arrow_arguments(command_arguments(line, command)).empty())
                 out << "readonly -> hash is derived from the current position\n";
-            out << "hash -> " << pos.key << " (" << display_key_hex(pos.key) << ")\n";
+            out << "info string hash -> " << pos.key << " (" << display_key_hex(pos.key) << ")\n";
             return true;
         }
 

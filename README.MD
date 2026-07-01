@@ -1,7 +1,5 @@
-# MagnusChessX Thinking
-
 <p align="center">
-  <img src="logo.png" alt="MagnusChessX Thinking logo" width="220">
+  <img src="logo.png" alt="MagnusChessX Thinking logo" width="560" height="315">
 </p>
 
 <p align="center">
@@ -252,11 +250,7 @@ Primary UCI options:
 | MultiPV | spin | 1 | Multi-principal-variation output, maximum 256. |
 | Contempt | spin | 0 | Evaluation offset, range -10000 to 10000. |
 | Move Overhead | spin | 10 | Time-management overhead in milliseconds. |
-| Clear Hash | button | n/a | Clears the transposition table. |
-| Ponder | check | true | Enables pondering support. |
-| FullPV | check | false | Enables extended PV reporting. |
-| UseMsvSmp | check | false | Enables MSV SMP mode. |
-| MsvInfo | check | false | Emits MSV info strings. |
+| Ponder | check | false | Enables pondering support. |
 | SyzygyPath | string | `<empty>` | Directory containing Syzygy files. |
 | SyzygyProbeDepth | spin | 1 | Minimum depth for tablebase probes, range 1 to 100. |
 | Syzygy50MoveRule | check | true | Applies 50-move-rule-aware tablebase scoring. |

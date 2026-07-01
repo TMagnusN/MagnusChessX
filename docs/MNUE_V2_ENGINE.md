@@ -110,7 +110,7 @@ first-layer partials by branch epoch, bucket, and STM orientation. A material
 bucket change invalidates all three partials.
 
 Reloading a network increments a generation number, invalidating existing
-state safely. Clear Hash does not own or mutate MNUEv2 state. Accumulators are
+state safely. Hash clearing does not own or mutate MNUEv2 state. Accumulators are
 mathematically reversible i32 values; no saturating integer operation is used.
 
 ## Attack Int8 And AVX2

@@ -158,7 +158,7 @@ inline void material_table_resize_mb(MaterialTable& t, std::size_t mb) {
  * 包含：Tables(幾何/攻擊/Zobrist)、TT(置換表)、PawnTable(兵快取)、MaterialTable(材料快取)
  * memory_init() 一次性初始化所有子表
  * memory_new_search() 在每次新搜索前遞增 TT 世代編號
- * memory_clear_hash() 清空所有雜湊表（setoption Clear Hash）
+ * memory_clear_hash() 清空所有雜湊表。
  */
 struct Memory {
     // Shared immutable tables plus mutable hash storage used by search.
