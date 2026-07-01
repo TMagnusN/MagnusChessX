@@ -1,0 +1,15 @@
+[package]
+name = "mnue_x1_trainer"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.87"
+publish = false
+
+[features]
+default = []
+cuda = ["bullet_lib/cuda"]
+
+[dependencies]
+bullet_lib = { path = "D:/bullet/crates/bullet_lib" }
+bulletformat = "1.8.0"
+

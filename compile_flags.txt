@@ -1,0 +1,11 @@
+-std=gnu++20
+-xc++
+-I.
+-iquotesrc
+-D_DEBUG
+-DUNICODE
+-D_UNICODE
+-m64
+-march=x86-64
+-mtune=generic
+-DMAGNUS_DISABLE_PEXT=1
