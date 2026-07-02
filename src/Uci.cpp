@@ -1069,7 +1069,8 @@ struct UciSession {
                 if (out) {
                     *out << "info string loaded MNUE-X2-K16-pawn-Q8-A384 "
                          << mnue::x2k16::path() << '\n';
-                    *out << "info string MNUE-X2-K16-pawn-Q8-A384 backend: scalar-full-rebuild\n";
+                    *out << "info string MNUE-X2-K16-pawn-Q8-A384 backend: "
+                        << mnue::x2k16::backend_name() << '\n';
                 }
                 return true;
             }
@@ -1262,7 +1263,7 @@ struct UciSession {
         std::string eval_name;
         std::string eval_path;
         if (active_eval_kind == search::SearchEvalKind::X2K16) {
-            raw_stm = mnue::x2k16::evaluate_reference(pos, mem);
+            raw_stm = mnue::x2k16::evaluate_lut(pos, mem);
             eval_name = "x2-k16-pawn-q8-a384";
             eval_path = mnue::x2k16::path();
         } else {
@@ -1285,7 +1286,8 @@ struct UciSession {
         out << "info string eval " << eval_name << '\n';
         out << "info string mnue " << eval_name << " path " << eval_path << '\n';
         if (active_eval_kind == search::SearchEvalKind::X2K16)
-            out << "info string mnue " << eval_name << " backend scalar-full-rebuild\n";
+            out << "info string mnue " << eval_name << " backend "
+                << mnue::x2k16::backend_name() << '\n';
         out << "info string mnue " << eval_name << " material " << mnue::material_units(pos) << '\n';
         out << "info string mnue " << eval_name << " raw " << raw_white << '\n';
         out << "info string mnue " << eval_name << " search " << search_white << '\n';
@@ -1340,7 +1342,8 @@ struct UciSession {
 
         out << "info string loaded MNUE-X2-K16-pawn-Q8-A384 "
             << mnue::x2k16::path() << '\n';
-        out << "info string MNUE-X2-K16-pawn-Q8-A384 backend: scalar-full-rebuild\n";
+        out << "info string MNUE-X2-K16-pawn-Q8-A384 backend: "
+            << mnue::x2k16::backend_name() << '\n';
     }
 
     void handle_x2k16_info(std::ostream& out) {
@@ -1354,11 +1357,18 @@ struct UciSession {
             return;
         }
 
-        const int raw_stm = mnue::x2k16::evaluate_reference(pos, mem);
+        const int raw_stm = mnue::x2k16::evaluate_lut(pos, mem);
+        const int reference_raw_stm = mnue::x2k16::evaluate_reference(pos, mem);
+        out << "info string MNUE-X2-K16-pawn-Q8-A384 eval backend "
+            << mnue::x2k16::backend_name() << '\n';
         out << "info string MNUE-X2-K16-pawn-Q8-A384 eval stm "
             << raw_stm << '\n';
         out << "info string MNUE-X2-K16-pawn-Q8-A384 eval white "
             << white_pov_score(pos, raw_stm) << '\n';
+        out << "info string MNUE-X2-K16-pawn-Q8-A384 eval reference_stm "
+            << reference_raw_stm << '\n';
+        out << "info string MNUE-X2-K16-pawn-Q8-A384 eval reference_diff "
+            << (raw_stm - reference_raw_stm) << '\n';
     }
 
     void handle_x2k16_dump(std::ostream& out) {
@@ -1369,6 +1379,39 @@ struct UciSession {
         mnue::x2k16::debug_dump_evaluation(pos, mem, out);
     }
 
+    void handle_x2k16_compare(std::ostream& out) {
+        mnue::x2k16::debug_compare_evaluation(pos, mem, out);
+    }
+
+    void handle_x2k16_profile(std::ostream& out) {
+        mnue::x2k16::debug_profile_evaluation(pos, mem, out);
+    }
+
+    void handle_x2k16_stress(std::string_view line, std::ostream& out) {
+        int positions = 1000;
+        const std::string_view argument =
+            trim_ascii(command_arguments(line, "mnuex2k16stress"));
+        if (!argument.empty() && !parse_int(argument, positions)) {
+            out << "info string usage: mnuex2k16stress [positions]\n";
+            return;
+        }
+        mnue::x2k16::debug_stress_evaluation(pos, mem, positions, out);
+    }
+
+    void handle_x2k16_inc_compare(std::ostream& out) {
+        mnue::x2k16::debug_incremental_compare(pos, mem, out);
+    }
+
+    void handle_x2k16_inc_stress(std::string_view line, std::ostream& out) {
+        int positions = 1000;
+        const std::string_view argument =
+            trim_ascii(command_arguments(line, "mnuex2k16incstress"));
+        if (!argument.empty() && !parse_int(argument, positions)) {
+            out << "info string usage: mnuex2k16incstress [positions]\n";
+            return;
+        }
+        mnue::x2k16::debug_incremental_stress(pos, mem, positions, out);
+    }
 
     void handle_bench(std::string_view line, std::ostream& out) {
         ensure_attack_ready();
@@ -1462,7 +1505,7 @@ struct UciSession {
                 << mnue::x2k16::Layout::PieceInputSize << '+'
                 << mnue::x2k16::Layout::AttackInputSize << '+'
                 << mnue::x2k16::Layout::PawnPairInputSize
-                << "), scalar-full-rebuild)\n";
+                << "), " << mnue::x2k16::backend_name() << ")\n";
         } else {
             desc << "info string MNUE evaluation using "
                 << mnue_name()
@@ -1629,6 +1672,31 @@ struct UciSession {
 
         if (line == "mnuex2k16debug") {
             handle_x2k16_debug(out);
+            return true;
+        }
+
+        if (line == "mnuex2k16compare") {
+            handle_x2k16_compare(out);
+            return true;
+        }
+
+        if (line == "mnuex2k16profile") {
+            handle_x2k16_profile(out);
+            return true;
+        }
+
+        if (command_starts_with(line, "mnuex2k16stress")) {
+            handle_x2k16_stress(line, out);
+            return true;
+        }
+
+        if (line == "mnuex2k16inccompare") {
+            handle_x2k16_inc_compare(out);
+            return true;
+        }
+
+        if (command_starts_with(line, "mnuex2k16incstress")) {
+            handle_x2k16_inc_stress(line, out);
             return true;
         }
 

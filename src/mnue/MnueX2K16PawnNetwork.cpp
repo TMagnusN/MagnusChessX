@@ -25,12 +25,14 @@ SOFTWARE.
 #include "mnue/MnueX2K16PawnNetwork.h"
 
 #include "Memory.h"
+#include "board/MoveGen.h"
 #include "board/Position.h"
 #include "mnue/Mnue.h"
 
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
@@ -40,11 +42,16 @@ SOFTWARE.
 #include <string>
 #include <vector>
 
+#if defined(__AVX2__)
+#include <immintrin.h>
+#endif
+
 namespace magnus::mnue::x2k16 {
 namespace {
 
 using i16 = std::int16_t;
 using i32 = std::int32_t;
+using i64 = std::int64_t;
 using u8 = std::uint8_t;
 using u16 = std::uint16_t;
 using u32 = std::uint32_t;
@@ -844,47 +851,451 @@ using BackendInput =
 using Hidden1 = std::array<float, static_cast<std::size_t>(Layout::L1Size)>;
 using Hidden2 = std::array<float, static_cast<std::size_t>(Layout::L2Size)>;
 
+struct X2K16PawnAccumulator {
+    alignas(64) std::array<PieceAccumulator, COLOR_NB> piece{};
+    alignas(64) std::array<AttackAccumulator, COLOR_NB> attack{};
+    alignas(64) std::array<PawnPairAccumulator, COLOR_NB> pawn{};
+    bool piece_valid = false;
+    bool pawn_valid = false;
+    bool attack_valid = false;
+    Key position_hash = 0ULL;
+};
+
+struct EvaluationProfile {
+    i64 feature_gen_time_us = 0;
+    i64 piece_l0_time_us = 0;
+    i64 attack_l0_time_us = 0;
+    i64 pawn_l0_time_us = 0;
+    i64 merge_activation_time_us = 0;
+    i64 head_time_us = 0;
+    i64 total_eval_time_us = 0;
+    int active_piece_rows = 0;
+    int active_attack_rows = 0;
+    int active_pawn_rows = 0;
+    int raw = 0;
+    int searchcp = 0;
+};
+
 struct FeatureLists {
     std::array<std::vector<int>, COLOR_NB> piece{};
     std::array<std::vector<int>, COLOR_NB> attack{};
     std::array<std::vector<int>, COLOR_NB> pawn_pair{};
 };
 
-void add_piece_row(PieceAccumulator& accumulator, int feature) noexcept {
-    const std::int8_t* row =
-        g_network.piece_l0w.data()
-        + static_cast<std::size_t>(feature) * Layout::PieceHiddenSize;
-    for (int column = 0; column < Layout::PieceHiddenSize; ++column) {
-        accumulator[static_cast<std::size_t>(column)] +=
-            static_cast<i32>(row[column])
-            * static_cast<i32>(kPieceRescale);
+using Clock = std::chrono::steady_clock;
+
+[[nodiscard]] i64 elapsed_us(
+    Clock::time_point begin,
+    Clock::time_point end
+) noexcept {
+    return std::chrono::duration_cast<std::chrono::microseconds>(
+        end - begin
+    ).count();
+}
+
+void sort_unique_feature_lists(FeatureLists& lists) {
+    for (int perspective_index = WHITE;
+         perspective_index <= BLACK;
+         ++perspective_index) {
+        auto sort_unique = [](std::vector<int>& values) {
+            std::sort(values.begin(), values.end());
+            values.erase(
+                std::unique(values.begin(), values.end()),
+                values.end()
+            );
+        };
+        sort_unique(lists.piece[static_cast<std::size_t>(perspective_index)]);
+        sort_unique(lists.attack[static_cast<std::size_t>(perspective_index)]);
+        sort_unique(
+            lists.pawn_pair[static_cast<std::size_t>(perspective_index)]
+        );
     }
 }
 
-void add_attack_row(AttackAccumulator& accumulator, int feature) noexcept {
+[[nodiscard]] int active_rows(
+    const std::array<std::vector<int>, COLOR_NB>& rows
+) noexcept {
+    return static_cast<int>(rows[WHITE].size() + rows[BLACK].size());
+}
+
+template<std::size_t N>
+[[nodiscard]] i64 checksum_accumulator(
+    const std::array<i32, N>& accumulator
+) noexcept {
+    i64 checksum = 0;
+    for (std::size_t index = 0; index < N; ++index) {
+        checksum += static_cast<i64>(accumulator[index])
+            * static_cast<i64>(index + 1);
+    }
+    return checksum;
+}
+
+template<std::size_t N>
+[[nodiscard]] i64 checksum_branch(
+    const std::array<std::array<i32, N>, COLOR_NB>& branch
+) noexcept {
+    return checksum_accumulator(branch[WHITE])
+        ^ (checksum_accumulator(branch[BLACK]) * 1000003LL);
+}
+
+enum class RowAddBackend {
+    Scalar,
+    Avx2
+};
+
+[[nodiscard]] constexpr bool avx2_rowadd_compiled() noexcept {
+#if defined(__AVX2__)
+    return true;
+#else
+    return false;
+#endif
+}
+
+[[nodiscard]] constexpr RowAddBackend active_rowadd_backend() noexcept {
+#if defined(__AVX2__)
+    return RowAddBackend::Avx2;
+#else
+    return RowAddBackend::Scalar;
+#endif
+}
+
+[[nodiscard]] const char* rowadd_backend_name(
+    RowAddBackend backend
+) noexcept {
+    if (backend == RowAddBackend::Avx2 && avx2_rowadd_compiled())
+        return "avx2-lut-full-rebuild";
+    return "scalar-lut-full-rebuild";
+}
+
+void add_i8_row_to_i32_acc_scalar(
+    i32* accumulator,
+    const std::int8_t* row,
+    int lanes,
+    int scale
+) noexcept {
+    for (int column = 0; column < lanes; ++column) {
+        accumulator[column] +=
+            static_cast<i32>(row[column]) * static_cast<i32>(scale);
+    }
+}
+
+void sub_i8_row_from_i32_acc_scalar(
+    i32* accumulator,
+    const std::int8_t* row,
+    int lanes,
+    int scale
+) noexcept {
+    for (int column = 0; column < lanes; ++column) {
+        accumulator[column] -=
+            static_cast<i32>(row[column]) * static_cast<i32>(scale);
+    }
+}
+
+#if defined(__AVX2__)
+[[nodiscard]] __m256i scale_i32_avx2(
+    __m256i values,
+    int scale,
+    __m256i scale_vector
+) noexcept {
+    if (scale == 4)
+        return _mm256_slli_epi32(values, 2);
+    if (scale == 2)
+        return _mm256_slli_epi32(values, 1);
+    return _mm256_mullo_epi32(values, scale_vector);
+}
+
+void add_i8_row_to_i32_acc_avx2(
+    i32* accumulator,
+    const std::int8_t* row,
+    int lanes,
+    int scale
+) noexcept {
+    const __m256i scale_vector = _mm256_set1_epi32(scale);
+    int column = 0;
+    for (; column + 32 <= lanes; column += 32) {
+        for (int offset = 0; offset < 32; offset += 8) {
+            const int lane = column + offset;
+            const __m128i bytes = _mm_loadl_epi64(
+                reinterpret_cast<const __m128i*>(row + lane)
+            );
+            __m256i values = _mm256_cvtepi8_epi32(bytes);
+            values = scale_i32_avx2(values, scale, scale_vector);
+            const __m256i old_acc = _mm256_loadu_si256(
+                reinterpret_cast<const __m256i*>(accumulator + lane)
+            );
+            _mm256_storeu_si256(
+                reinterpret_cast<__m256i*>(accumulator + lane),
+                _mm256_add_epi32(old_acc, values)
+            );
+        }
+    }
+
+    for (; column < lanes; ++column) {
+        accumulator[column] +=
+            static_cast<i32>(row[column]) * static_cast<i32>(scale);
+    }
+}
+
+void sub_i8_row_from_i32_acc_avx2(
+    i32* accumulator,
+    const std::int8_t* row,
+    int lanes,
+    int scale
+) noexcept {
+    const __m256i scale_vector = _mm256_set1_epi32(scale);
+    int column = 0;
+    for (; column + 32 <= lanes; column += 32) {
+        for (int offset = 0; offset < 32; offset += 8) {
+            const int lane = column + offset;
+            const __m128i bytes = _mm_loadl_epi64(
+                reinterpret_cast<const __m128i*>(row + lane)
+            );
+            __m256i values = _mm256_cvtepi8_epi32(bytes);
+            values = scale_i32_avx2(values, scale, scale_vector);
+            const __m256i old_acc = _mm256_loadu_si256(
+                reinterpret_cast<const __m256i*>(accumulator + lane)
+            );
+            _mm256_storeu_si256(
+                reinterpret_cast<__m256i*>(accumulator + lane),
+                _mm256_sub_epi32(old_acc, values)
+            );
+        }
+    }
+
+    for (; column < lanes; ++column) {
+        accumulator[column] -=
+            static_cast<i32>(row[column]) * static_cast<i32>(scale);
+    }
+}
+#endif
+
+void add_i8_row_to_i32_acc(
+    RowAddBackend backend,
+    i32* accumulator,
+    const std::int8_t* row,
+    int lanes,
+    int scale
+) noexcept {
+#if defined(__AVX2__)
+    if (backend == RowAddBackend::Avx2) {
+        add_i8_row_to_i32_acc_avx2(accumulator, row, lanes, scale);
+        return;
+    }
+#else
+    (void)backend;
+#endif
+    add_i8_row_to_i32_acc_scalar(accumulator, row, lanes, scale);
+}
+
+void sub_i8_row_from_i32_acc(
+    RowAddBackend backend,
+    i32* accumulator,
+    const std::int8_t* row,
+    int lanes,
+    int scale
+) noexcept {
+#if defined(__AVX2__)
+    if (backend == RowAddBackend::Avx2) {
+        sub_i8_row_from_i32_acc_avx2(accumulator, row, lanes, scale);
+        return;
+    }
+#else
+    (void)backend;
+#endif
+    sub_i8_row_from_i32_acc_scalar(accumulator, row, lanes, scale);
+}
+
+void add_piece_row(
+    PieceAccumulator& accumulator,
+    int feature,
+    RowAddBackend backend = RowAddBackend::Scalar
+) noexcept {
+    const std::int8_t* row =
+        g_network.piece_l0w.data()
+        + static_cast<std::size_t>(feature) * Layout::PieceHiddenSize;
+    add_i8_row_to_i32_acc(
+        backend,
+        accumulator.data(),
+        row,
+        Layout::PieceHiddenSize,
+        static_cast<int>(kPieceRescale)
+    );
+}
+
+void sub_piece_row(
+    PieceAccumulator& accumulator,
+    int feature,
+    RowAddBackend backend = RowAddBackend::Scalar
+) noexcept {
+    const std::int8_t* row =
+        g_network.piece_l0w.data()
+        + static_cast<std::size_t>(feature) * Layout::PieceHiddenSize;
+    sub_i8_row_from_i32_acc(
+        backend,
+        accumulator.data(),
+        row,
+        Layout::PieceHiddenSize,
+        static_cast<int>(kPieceRescale)
+    );
+}
+
+void add_attack_row(
+    AttackAccumulator& accumulator,
+    int feature,
+    RowAddBackend backend = RowAddBackend::Scalar
+) noexcept {
     const std::int8_t* row =
         g_network.attack_l0w.data()
         + static_cast<std::size_t>(feature) * Layout::AttackHiddenSize;
-    for (int column = 0; column < Layout::AttackHiddenSize; ++column) {
-        accumulator[static_cast<std::size_t>(column)] +=
-            static_cast<i32>(row[column])
-            * static_cast<i32>(kAttackRescale);
-    }
+    add_i8_row_to_i32_acc(
+        backend,
+        accumulator.data(),
+        row,
+        Layout::AttackHiddenSize,
+        static_cast<int>(kAttackRescale)
+    );
 }
 
 void add_pawn_pair_row(
     PawnPairAccumulator& accumulator,
-    int feature
+    int feature,
+    RowAddBackend backend = RowAddBackend::Scalar
 ) noexcept {
     const std::int8_t* row =
         g_network.pawn_pair_l0w.data()
         + static_cast<std::size_t>(feature) * Layout::PawnPairHiddenSize;
-    for (int column = 0; column < Layout::PawnPairHiddenSize; ++column) {
-        accumulator[static_cast<std::size_t>(column)] +=
-            static_cast<i32>(row[column])
-            * static_cast<i32>(kPawnPairRescale);
+    add_i8_row_to_i32_acc(
+        backend,
+        accumulator.data(),
+        row,
+        Layout::PawnPairHiddenSize,
+        static_cast<int>(kPawnPairRescale)
+    );
+}
+
+void sub_pawn_pair_row(
+    PawnPairAccumulator& accumulator,
+    int feature,
+    RowAddBackend backend = RowAddBackend::Scalar
+) noexcept {
+    const std::int8_t* row =
+        g_network.pawn_pair_l0w.data()
+        + static_cast<std::size_t>(feature) * Layout::PawnPairHiddenSize;
+    sub_i8_row_from_i32_acc(
+        backend,
+        accumulator.data(),
+        row,
+        Layout::PawnPairHiddenSize,
+        static_cast<int>(kPawnPairRescale)
+    );
+}
+
+void clear_accumulator_arrays(
+    std::array<PieceAccumulator, COLOR_NB>& piece_accumulators,
+    std::array<AttackAccumulator, COLOR_NB>& attack_accumulators,
+    std::array<PawnPairAccumulator, COLOR_NB>& pawn_pair_accumulators
+) noexcept {
+    for (int perspective_index = WHITE;
+         perspective_index <= BLACK;
+         ++perspective_index) {
+        const std::size_t p = static_cast<std::size_t>(perspective_index);
+        piece_accumulators[p].fill(0);
+        attack_accumulators[p].fill(0);
+        pawn_pair_accumulators[p].fill(0);
     }
 }
+
+void clear_accumulator(X2K16PawnAccumulator& accumulator) noexcept {
+    clear_accumulator_arrays(
+        accumulator.piece,
+        accumulator.attack,
+        accumulator.pawn
+    );
+    accumulator.piece_valid = false;
+    accumulator.pawn_valid = false;
+    accumulator.attack_valid = false;
+    accumulator.position_hash = 0ULL;
+}
+
+void add_feature_lists_to_accumulators(
+    const FeatureLists& lists,
+    std::array<PieceAccumulator, COLOR_NB>& piece_accumulators,
+    std::array<AttackAccumulator, COLOR_NB>& attack_accumulators,
+    std::array<PawnPairAccumulator, COLOR_NB>& pawn_pair_accumulators,
+    EvaluationProfile* profile = nullptr,
+    RowAddBackend backend = RowAddBackend::Scalar
+) noexcept {
+    const auto piece_begin = Clock::now();
+    for (int perspective_index = WHITE;
+         perspective_index <= BLACK;
+         ++perspective_index) {
+        const std::size_t p = static_cast<std::size_t>(perspective_index);
+        for (const int row : lists.piece[p])
+            add_piece_row(piece_accumulators[p], row, backend);
+    }
+    const auto piece_end = Clock::now();
+
+    const auto attack_begin = Clock::now();
+    for (int perspective_index = WHITE;
+         perspective_index <= BLACK;
+         ++perspective_index) {
+        const std::size_t p = static_cast<std::size_t>(perspective_index);
+        for (const int row : lists.attack[p])
+            add_attack_row(attack_accumulators[p], row, backend);
+    }
+    const auto attack_end = Clock::now();
+
+    const auto pawn_begin = Clock::now();
+    for (int perspective_index = WHITE;
+         perspective_index <= BLACK;
+         ++perspective_index) {
+        const std::size_t p = static_cast<std::size_t>(perspective_index);
+        for (const int row : lists.pawn_pair[p])
+            add_pawn_pair_row(pawn_pair_accumulators[p], row, backend);
+    }
+    const auto pawn_end = Clock::now();
+
+    if (profile != nullptr) {
+        profile->piece_l0_time_us += elapsed_us(piece_begin, piece_end);
+        profile->attack_l0_time_us += elapsed_us(attack_begin, attack_end);
+        profile->pawn_l0_time_us += elapsed_us(pawn_begin, pawn_end);
+        profile->active_piece_rows += active_rows(lists.piece);
+        profile->active_attack_rows += active_rows(lists.attack);
+        profile->active_pawn_rows += active_rows(lists.pawn_pair);
+    }
+}
+
+template<typename AddRow, typename SubRow>
+void apply_sorted_row_delta(
+    const std::vector<int>& before,
+    const std::vector<int>& after,
+    AddRow add_row,
+    SubRow sub_row
+) noexcept {
+    std::size_t old_index = 0;
+    std::size_t new_index = 0;
+    while (old_index < before.size() || new_index < after.size()) {
+        if (new_index >= after.size()
+            || (old_index < before.size()
+                && before[old_index] < after[new_index])) {
+            sub_row(before[old_index]);
+            ++old_index;
+        } else if (old_index >= before.size()
+                   || after[new_index] < before[old_index]) {
+            add_row(after[new_index]);
+            ++new_index;
+        } else {
+            ++old_index;
+            ++new_index;
+        }
+    }
+}
+
+void reset_accumulator_lut(
+    X2K16PawnAccumulator& accumulator,
+    const Position& pos,
+    RowAddBackend backend = RowAddBackend::Scalar
+) noexcept;
 
 [[nodiscard]] std::array<bool, COLOR_NB> perspective_mirrors(
     const Position& pos
@@ -901,6 +1312,190 @@ void add_pawn_pair_row(
             false
         ))
     }};
+}
+
+[[maybe_unused]] void add_piece_feature_rows(
+    const Position& pos,
+    X2K16PawnAccumulator& accumulator,
+    Piece piece,
+    Square square,
+    RowAddBackend backend
+) noexcept {
+    if (piece == PIECE_NONE || square == NO_SQ)
+        return;
+    const LookupTables& tables = lookup_tables();
+    const PieceType piece_type = type_of(piece);
+    const Color piece_color = color_of(piece);
+    for (int perspective_index = WHITE;
+         perspective_index <= BLACK;
+         ++perspective_index) {
+        const Color perspective =
+            static_cast<Color>(perspective_index);
+        const std::size_t p = static_cast<std::size_t>(perspective_index);
+        const int relative_color = piece_color == perspective ? 0 : 1;
+        const Square king = safe_king_square(pos, perspective);
+        const int row = tables.piece_row_by_king[p]
+            [static_cast<std::size_t>(king)]
+            [static_cast<std::size_t>(relative_color)]
+            [static_cast<std::size_t>(piece_type)]
+            [static_cast<std::size_t>(square)];
+        add_piece_row(accumulator.piece[p], row, backend);
+    }
+}
+
+[[maybe_unused]] void remove_piece_feature_rows(
+    const Position& pos,
+    X2K16PawnAccumulator& accumulator,
+    Piece piece,
+    Square square,
+    RowAddBackend backend
+) noexcept {
+    if (piece == PIECE_NONE || square == NO_SQ)
+        return;
+    const LookupTables& tables = lookup_tables();
+    const PieceType piece_type = type_of(piece);
+    const Color piece_color = color_of(piece);
+    for (int perspective_index = WHITE;
+         perspective_index <= BLACK;
+         ++perspective_index) {
+        const Color perspective =
+            static_cast<Color>(perspective_index);
+        const std::size_t p = static_cast<std::size_t>(perspective_index);
+        const int relative_color = piece_color == perspective ? 0 : 1;
+        const Square king = safe_king_square(pos, perspective);
+        const int row = tables.piece_row_by_king[p]
+            [static_cast<std::size_t>(king)]
+            [static_cast<std::size_t>(relative_color)]
+            [static_cast<std::size_t>(piece_type)]
+            [static_cast<std::size_t>(square)];
+        sub_piece_row(accumulator.piece[p], row, backend);
+    }
+}
+
+[[nodiscard]] FeatureLists collect_features_formula(const Position& pos) {
+    FeatureLists lists{};
+    const std::array<bool, COLOR_NB> mirrors = perspective_mirrors(pos);
+    const std::array<Square, COLOR_NB> kings{{
+        safe_king_square(pos, WHITE),
+        safe_king_square(pos, BLACK)
+    }};
+    std::array<std::vector<int>, COLOR_NB> pawn_tokens{};
+
+    Bitboard occupied = pos.occupied;
+    while (occupied != 0ULL) {
+        const Square square = static_cast<Square>(
+            std::countr_zero(static_cast<std::uint64_t>(occupied))
+        );
+        occupied &= occupied - 1;
+
+        const Piece piece = piece_on(pos, square);
+        if (piece == PIECE_NONE)
+            continue;
+        const PieceType piece_type = type_of(piece);
+        const Color piece_color = color_of(piece);
+
+        for (int perspective_index = WHITE;
+             perspective_index <= BLACK;
+             ++perspective_index) {
+            const Color perspective =
+                static_cast<Color>(perspective_index);
+            const std::size_t p =
+                static_cast<std::size_t>(perspective_index);
+            const int relative_color =
+                piece_color == perspective ? 0 : 1;
+            const Square relative_king =
+                relative_square(perspective, kings[p], false);
+            const int bucket = king_bucket16(relative_king);
+            const Square relative_sq =
+                relative_square(perspective, square, mirrors[p]);
+            lists.piece[p].push_back(piece_feature_index(
+                bucket,
+                relative_color,
+                piece_type,
+                relative_sq
+            ));
+
+            if (piece_type == PAWN) {
+                const Square relative_pawn =
+                    relative_square_no_mirror(perspective, square);
+                const int pawn_sq = pawn_square48(relative_pawn);
+                if (pawn_sq >= 0) {
+                    pawn_tokens[p].push_back(
+                        relative_color * Layout::PawnSquares + pawn_sq
+                    );
+                }
+            }
+        }
+
+        Bitboard targets = occupied_attacks(piece, square, pos.occupied);
+        while (targets != 0ULL) {
+            const Square target = static_cast<Square>(
+                std::countr_zero(static_cast<std::uint64_t>(targets))
+            );
+            targets &= targets - 1;
+
+            const Piece victim = piece_on(pos, target);
+            if (victim == PIECE_NONE)
+                continue;
+            const PieceType victim_type = type_of(victim);
+            const Color victim_color = color_of(victim);
+
+            for (int perspective_index = WHITE;
+                 perspective_index <= BLACK;
+                 ++perspective_index) {
+                const Color perspective =
+                    static_cast<Color>(perspective_index);
+                const std::size_t p =
+                    static_cast<std::size_t>(perspective_index);
+                const int attacker_relative =
+                    piece_color == perspective ? 0 : 1;
+                const int victim_relative =
+                    victim_color == perspective ? 0 : 1;
+                const Square relative_from =
+                    relative_square(perspective, square, mirrors[p]);
+                const Square relative_to =
+                    relative_square(perspective, target, mirrors[p]);
+                const int base = target_slot_base(
+                    attacker_relative,
+                    piece_type,
+                    relative_from,
+                    relative_to
+                );
+                if (base >= 0) {
+                    lists.attack[p].push_back(
+                        base
+                        + victim_relative * Layout::PieceTypes
+                        + static_cast<int>(victim_type)
+                    );
+                }
+            }
+        }
+    }
+
+    for (int perspective_index = WHITE;
+         perspective_index <= BLACK;
+         ++perspective_index) {
+        std::vector<int>& tokens =
+            pawn_tokens[static_cast<std::size_t>(perspective_index)];
+        for (std::size_t first = 0; first < tokens.size(); ++first) {
+            for (std::size_t second = first + 1;
+                 second < tokens.size();
+                 ++second) {
+                const int a = tokens[first];
+                const int b = tokens[second];
+                const int file_a = (a % Layout::PawnSquares) % 8;
+                const int file_b = (b % Layout::PawnSquares) % 8;
+                if (std::abs(file_a - file_b) <= 1) {
+                    lists.pawn_pair[static_cast<std::size_t>(
+                        perspective_index
+                    )].push_back(pawn_pair_index(a, b));
+                }
+            }
+        }
+    }
+
+    sort_unique_feature_lists(lists);
+    return lists;
 }
 
 [[nodiscard]] FeatureLists collect_features(const Position& pos) {
@@ -1021,40 +1616,145 @@ void add_pawn_pair_row(
         }
     }
 
+    sort_unique_feature_lists(lists);
+    return lists;
+}
+
+void clear_piece_accumulators(
+    std::array<PieceAccumulator, COLOR_NB>& piece_accumulators
+) noexcept {
+    for (auto& accumulator : piece_accumulators)
+        accumulator.fill(0);
+}
+
+void clear_attack_accumulators(
+    std::array<AttackAccumulator, COLOR_NB>& attack_accumulators
+) noexcept {
+    for (auto& accumulator : attack_accumulators)
+        accumulator.fill(0);
+}
+
+void clear_pawn_accumulators(
+    std::array<PawnPairAccumulator, COLOR_NB>& pawn_accumulators
+) noexcept {
+    for (auto& accumulator : pawn_accumulators)
+        accumulator.fill(0);
+}
+
+void rebuild_piece_accumulators(
+    const Position& pos,
+    std::array<PieceAccumulator, COLOR_NB>& piece_accumulators,
+    RowAddBackend backend
+) noexcept {
+    clear_piece_accumulators(piece_accumulators);
+    const FeatureLists lists = collect_features(pos);
     for (int perspective_index = WHITE;
          perspective_index <= BLACK;
          ++perspective_index) {
-        auto sort_unique = [](std::vector<int>& values) {
-            std::sort(values.begin(), values.end());
-            values.erase(
-                std::unique(values.begin(), values.end()),
-                values.end()
-            );
-        };
-        sort_unique(lists.piece[static_cast<std::size_t>(perspective_index)]);
-        sort_unique(lists.attack[static_cast<std::size_t>(perspective_index)]);
-        sort_unique(
-            lists.pawn_pair[static_cast<std::size_t>(perspective_index)]
-        );
+        const std::size_t p = static_cast<std::size_t>(perspective_index);
+        for (const int row : lists.piece[p])
+            add_piece_row(piece_accumulators[p], row, backend);
     }
+}
 
-    return lists;
+void rebuild_attack_accumulators(
+    const Position& pos,
+    std::array<AttackAccumulator, COLOR_NB>& attack_accumulators,
+    RowAddBackend backend
+) noexcept {
+    clear_attack_accumulators(attack_accumulators);
+
+    const LookupTables& tables = lookup_tables();
+    const std::array<bool, COLOR_NB> mirrors = perspective_mirrors(pos);
+
+    Bitboard occupied = pos.occupied;
+    while (occupied != 0ULL) {
+        const Square square = static_cast<Square>(
+            std::countr_zero(static_cast<std::uint64_t>(occupied))
+        );
+        occupied &= occupied - 1;
+
+        const Piece piece = piece_on(pos, square);
+        if (piece == PIECE_NONE)
+            continue;
+        const PieceType piece_type = type_of(piece);
+        const Color piece_color = color_of(piece);
+
+        Bitboard targets = occupied_attacks(piece, square, pos.occupied);
+        while (targets != 0ULL) {
+            const Square target = static_cast<Square>(
+                std::countr_zero(static_cast<std::uint64_t>(targets))
+            );
+            targets &= targets - 1;
+
+            const Piece victim = piece_on(pos, target);
+            if (victim == PIECE_NONE)
+                continue;
+            const PieceType victim_type = type_of(victim);
+            const Color victim_color = color_of(victim);
+
+            for (int perspective_index = WHITE;
+                 perspective_index <= BLACK;
+                 ++perspective_index) {
+                const Color perspective =
+                    static_cast<Color>(perspective_index);
+                const std::size_t p =
+                    static_cast<std::size_t>(perspective_index);
+                const int attacker_relative =
+                    piece_color == perspective ? 0 : 1;
+                const int victim_relative =
+                    victim_color == perspective ? 0 : 1;
+                const int orientation =
+                    orientation_index(perspective, mirrors[p]);
+                const i32 base = tables.edge_base
+                    [static_cast<std::size_t>(orientation)]
+                    [static_cast<std::size_t>(attacker_relative)]
+                    [static_cast<std::size_t>(piece_type)]
+                    [static_cast<std::size_t>(square)]
+                    [static_cast<std::size_t>(target)];
+                if (base >= 0) {
+                    const int row = static_cast<int>(base)
+                        + victim_relative * Layout::PieceTypes
+                        + static_cast<int>(victim_type);
+                    add_attack_row(attack_accumulators[p], row, backend);
+                }
+            }
+        }
+    }
+}
+
+void rebuild_accumulators_formula(
+    const Position& pos,
+    std::array<PieceAccumulator, COLOR_NB>& piece_accumulators,
+    std::array<AttackAccumulator, COLOR_NB>& attack_accumulators,
+    std::array<PawnPairAccumulator, COLOR_NB>& pawn_pair_accumulators
+) noexcept {
+    clear_accumulator_arrays(
+        piece_accumulators,
+        attack_accumulators,
+        pawn_pair_accumulators
+    );
+    const FeatureLists lists = collect_features_formula(pos);
+    add_feature_lists_to_accumulators(
+        lists,
+        piece_accumulators,
+        attack_accumulators,
+        pawn_pair_accumulators
+    );
 }
 
 void rebuild_accumulators(
     const Position& pos,
     std::array<PieceAccumulator, COLOR_NB>& piece_accumulators,
     std::array<AttackAccumulator, COLOR_NB>& attack_accumulators,
-    std::array<PawnPairAccumulator, COLOR_NB>& pawn_pair_accumulators
+    std::array<PawnPairAccumulator, COLOR_NB>& pawn_pair_accumulators,
+    RowAddBackend backend = RowAddBackend::Scalar
 ) noexcept {
-    for (int perspective_index = WHITE;
-         perspective_index <= BLACK;
-         ++perspective_index) {
-        const std::size_t p = static_cast<std::size_t>(perspective_index);
-        piece_accumulators[p].fill(0);
-        attack_accumulators[p].fill(0);
-        pawn_pair_accumulators[p].fill(0);
-    }
+    clear_accumulator_arrays(
+        piece_accumulators,
+        attack_accumulators,
+        pawn_pair_accumulators
+    );
 
     const LookupTables& tables = lookup_tables();
     const std::array<bool, COLOR_NB> mirrors = perspective_mirrors(pos);
@@ -1092,7 +1792,7 @@ void rebuild_accumulators(
                 [static_cast<std::size_t>(relative_color)]
                 [static_cast<std::size_t>(piece_type)]
                 [static_cast<std::size_t>(square)];
-            add_piece_row(piece_accumulators[p], row);
+            add_piece_row(piece_accumulators[p], row, backend);
 
             if (piece_type == PAWN) {
                 const i16 token = tables.pawn_token[p]
@@ -1143,7 +1843,7 @@ void rebuild_accumulators(
                     const int row = static_cast<int>(base)
                         + victim_relative * Layout::PieceTypes
                         + static_cast<int>(victim_type);
-                    add_attack_row(attack_accumulators[p], row);
+                    add_attack_row(attack_accumulators[p], row, backend);
                 }
             }
         }
@@ -1169,10 +1869,28 @@ void rebuild_accumulators(
                         static_cast<std::size_t>(second)
                     ])];
                 if (row >= 0)
-                    add_pawn_pair_row(pawn_pair_accumulators[p], row);
+                    add_pawn_pair_row(pawn_pair_accumulators[p], row, backend);
             }
         }
     }
+}
+
+void reset_accumulator_lut(
+    X2K16PawnAccumulator& accumulator,
+    const Position& pos,
+    RowAddBackend backend
+) noexcept {
+    rebuild_accumulators(
+        pos,
+        accumulator.piece,
+        accumulator.attack,
+        accumulator.pawn,
+        backend
+    );
+    accumulator.piece_valid = true;
+    accumulator.pawn_valid = true;
+    accumulator.attack_valid = true;
+    accumulator.position_hash = pos.key;
 }
 
 void merge_accumulator(
@@ -1400,6 +2118,107 @@ struct PairwiseDebugStats {
     return static_cast<double>(output);
 }
 
+[[nodiscard]] double forward_profiled(
+    const Position& pos,
+    const std::array<PieceAccumulator, COLOR_NB>& piece_accumulators,
+    const std::array<AttackAccumulator, COLOR_NB>& attack_accumulators,
+    const std::array<PawnPairAccumulator, COLOR_NB>& pawn_pair_accumulators,
+    EvaluationProfile& profile
+) noexcept {
+    const auto merge_begin = Clock::now();
+    std::array<MergedAccumulator, COLOR_NB> merged{};
+    std::array<Pairwise, COLOR_NB> pairwise{};
+    for (int perspective_index = WHITE;
+         perspective_index <= BLACK;
+         ++perspective_index) {
+        const std::size_t p = static_cast<std::size_t>(perspective_index);
+        merge_accumulator(
+            piece_accumulators[p],
+            attack_accumulators[p],
+            pawn_pair_accumulators[p],
+            merged[p]
+        );
+        pairwise_crelu(merged[p], pairwise[p]);
+    }
+    const auto merge_end = Clock::now();
+    profile.merge_activation_time_us += elapsed_us(merge_begin, merge_end);
+
+    const auto head_begin = Clock::now();
+    const Color stm = static_cast<Color>(pos.side_to_move);
+    const Pairwise& stm_pairwise =
+        stm == WHITE ? pairwise[WHITE] : pairwise[BLACK];
+    const Pairwise& ntm_pairwise =
+        stm == WHITE ? pairwise[BLACK] : pairwise[WHITE];
+
+    BackendInput backend_input{};
+    std::copy(
+        stm_pairwise.begin(),
+        stm_pairwise.end(),
+        backend_input.begin()
+    );
+    std::copy(
+        ntm_pairwise.begin(),
+        ntm_pairwise.end(),
+        backend_input.begin() + Layout::PairwiseSize
+    );
+
+    const std::size_t bucket =
+        static_cast<std::size_t>(output_bucket(pos));
+
+    Hidden1 hidden1{};
+    const std::int8_t* l1_weights =
+        g_network.l1w.data()
+        + bucket * Layout::L1Size * Layout::HeadInputSize;
+    const float* l1_bias =
+        g_network.l1b.data() + bucket * Layout::L1Size;
+    constexpr float L1Scale =
+        1.0F / (static_cast<float>(kQa) * static_cast<float>(kL1Quant));
+    for (int row = 0; row < Layout::L1Size; ++row) {
+        float sum = l1_bias[row];
+        const std::int8_t* weights =
+            l1_weights + static_cast<std::size_t>(row)
+                * Layout::HeadInputSize;
+        for (int column = 0; column < Layout::HeadInputSize; ++column) {
+            const u8 input =
+                backend_input[static_cast<std::size_t>(column)];
+            if (input == 0)
+                continue;
+            sum += static_cast<float>(input)
+                * static_cast<float>(weights[column])
+                * L1Scale;
+        }
+        hidden1[static_cast<std::size_t>(row)] = crelu(sum);
+    }
+
+    Hidden2 hidden2{};
+    const float* l2_weights =
+        g_network.l2w.data()
+        + bucket * Layout::L2Size * Layout::L1Size;
+    const float* l2_bias =
+        g_network.l2b.data() + bucket * Layout::L2Size;
+    for (int row = 0; row < Layout::L2Size; ++row) {
+        float sum = l2_bias[row];
+        const float* weights =
+            l2_weights + static_cast<std::size_t>(row) * Layout::L1Size;
+        for (int column = 0; column < Layout::L1Size; ++column) {
+            sum += hidden1[static_cast<std::size_t>(column)]
+                * weights[column];
+        }
+        hidden2[static_cast<std::size_t>(row)] = crelu(sum);
+    }
+
+    float output = g_network.l3b[bucket];
+    const float* l3_weights =
+        g_network.l3w.data() + bucket * Layout::L2Size;
+    for (int column = 0; column < Layout::L2Size; ++column) {
+        output += hidden2[static_cast<std::size_t>(column)]
+            * l3_weights[column];
+    }
+    const auto head_end = Clock::now();
+    profile.head_time_us += elapsed_us(head_begin, head_end);
+    return static_cast<double>(output);
+}
+
 [[nodiscard]] double forward_masked(
     const Position& pos,
     const std::array<PieceAccumulator, COLOR_NB>& piece_accumulators,
@@ -1517,6 +2336,351 @@ void dump_vector(
     output << '\n';
 }
 
+[[nodiscard]] char piece_to_fen_char(Piece piece) noexcept {
+    switch (piece) {
+    case W_PAWN: return 'P';
+    case W_KNIGHT: return 'N';
+    case W_BISHOP: return 'B';
+    case W_ROOK: return 'R';
+    case W_QUEEN: return 'Q';
+    case W_KING: return 'K';
+    case B_PAWN: return 'p';
+    case B_KNIGHT: return 'n';
+    case B_BISHOP: return 'b';
+    case B_ROOK: return 'r';
+    case B_QUEEN: return 'q';
+    case B_KING: return 'k';
+    default: return '?';
+    }
+}
+
+[[nodiscard]] std::string square_to_fen(Square square) {
+    if (square == NO_SQ)
+        return "-";
+    std::string result;
+    result.push_back(static_cast<char>('a' + file_of_sq(square)));
+    result.push_back(static_cast<char>('1' + rank_of_sq(square)));
+    return result;
+}
+
+[[nodiscard]] std::string castling_to_fen(int rights) {
+    std::string result;
+    if ((rights & WHITE_OO) != 0)
+        result.push_back('K');
+    if ((rights & WHITE_OOO) != 0)
+        result.push_back('Q');
+    if ((rights & BLACK_OO) != 0)
+        result.push_back('k');
+    if ((rights & BLACK_OOO) != 0)
+        result.push_back('q');
+    return result.empty() ? "-" : result;
+}
+
+[[nodiscard]] std::string position_to_fen(const Position& pos) {
+    std::string fen;
+    for (int rank = 7; rank >= 0; --rank) {
+        int empty = 0;
+        for (int file = 0; file < 8; ++file) {
+            const Square square = rank * 8 + file;
+            const Piece piece = piece_on(pos, square);
+            if (piece == PIECE_NONE) {
+                ++empty;
+                continue;
+            }
+            if (empty != 0) {
+                fen.push_back(static_cast<char>('0' + empty));
+                empty = 0;
+            }
+            fen.push_back(piece_to_fen_char(piece));
+        }
+        if (empty != 0)
+            fen.push_back(static_cast<char>('0' + empty));
+        if (rank != 0)
+            fen.push_back('/');
+    }
+
+    fen += pos.side_to_move == WHITE ? " w " : " b ";
+    fen += castling_to_fen(pos.castling_rights);
+    fen.push_back(' ');
+    fen += square_to_fen(pos.ep_sq);
+    fen.push_back(' ');
+    fen += std::to_string(pos.halfmove_clock);
+    fen.push_back(' ');
+    fen += std::to_string(pos.fullmove_number);
+    return fen;
+}
+
+[[nodiscard]] u32 next_stress_random(u32& state) noexcept {
+    state = state * 1664525u + 1013904223u;
+    return state;
+}
+
+[[nodiscard]] char promotion_char(Move move) noexcept {
+    switch (promo_piece(move)) {
+    case KNIGHT: return 'n';
+    case BISHOP: return 'b';
+    case ROOK: return 'r';
+    case QUEEN: return 'q';
+    default: return 'q';
+    }
+}
+
+[[nodiscard]] std::string move_to_simple_uci(Move move) {
+    std::string text;
+    text += square_to_fen(from_sq(move));
+    text += square_to_fen(to_sq(move));
+    if (move_is_promotion(move))
+        text.push_back(promotion_char(move));
+    return text;
+}
+
+[[nodiscard]] bool equal_vectors(
+    const std::vector<int>& left,
+    const std::vector<int>& right
+) noexcept {
+    return left.size() == right.size()
+        && std::equal(left.begin(), left.end(), right.begin());
+}
+
+[[nodiscard]] bool feature_lists_equal(
+    const FeatureLists& left,
+    const FeatureLists& right
+) noexcept {
+    for (int perspective_index = WHITE;
+         perspective_index <= BLACK;
+         ++perspective_index) {
+        const std::size_t p = static_cast<std::size_t>(perspective_index);
+        if (!equal_vectors(left.piece[p], right.piece[p])
+            || !equal_vectors(left.attack[p], right.attack[p])
+            || !equal_vectors(left.pawn_pair[p], right.pawn_pair[p])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+[[nodiscard]] int first_vector_diff(
+    const std::vector<int>& left,
+    const std::vector<int>& right
+) noexcept {
+    const std::size_t size = std::min(left.size(), right.size());
+    for (std::size_t index = 0; index < size; ++index) {
+        if (left[index] != right[index])
+            return static_cast<int>(index);
+    }
+    if (left.size() != right.size())
+        return static_cast<int>(size);
+    return -1;
+}
+
+[[nodiscard]] EvaluationProfile profile_lut_evaluation(
+    const Position& pos,
+    RowAddBackend backend
+) noexcept {
+    EvaluationProfile profile{};
+    const auto total_begin = Clock::now();
+
+    const auto feature_begin = Clock::now();
+    const FeatureLists lists = collect_features(pos);
+    const auto feature_end = Clock::now();
+    profile.feature_gen_time_us = elapsed_us(feature_begin, feature_end);
+
+    X2K16PawnAccumulator accumulator{};
+    clear_accumulator(accumulator);
+    add_feature_lists_to_accumulators(
+        lists,
+        accumulator.piece,
+        accumulator.attack,
+        accumulator.pawn,
+        &profile,
+        backend
+    );
+    accumulator.piece_valid = true;
+    accumulator.pawn_valid = true;
+    accumulator.attack_valid = true;
+    accumulator.position_hash = pos.key;
+
+    profile.raw = score_from_output(forward_profiled(
+        pos,
+        accumulator.piece,
+        accumulator.attack,
+        accumulator.pawn,
+        profile
+    ));
+    profile.searchcp = magnus::mnue::search_score_to_cp(profile.raw, pos);
+    const auto total_end = Clock::now();
+    profile.total_eval_time_us = elapsed_us(total_begin, total_end);
+    return profile;
+}
+
+void rebuild_piece_pawn_incremental(
+    const Position& pos,
+    X2K16PawnAccumulator& accumulator,
+    RowAddBackend backend
+) noexcept {
+    const FeatureLists lists = collect_features(pos);
+    clear_piece_accumulators(accumulator.piece);
+    clear_pawn_accumulators(accumulator.pawn);
+
+    for (int perspective_index = WHITE;
+         perspective_index <= BLACK;
+         ++perspective_index) {
+        const std::size_t p = static_cast<std::size_t>(perspective_index);
+        for (const int row : lists.piece[p])
+            add_piece_row(accumulator.piece[p], row, backend);
+        for (const int row : lists.pawn_pair[p])
+            add_pawn_pair_row(accumulator.pawn[p], row, backend);
+    }
+
+    accumulator.piece_valid = true;
+    accumulator.pawn_valid = true;
+    accumulator.attack_valid = false;
+    accumulator.position_hash = pos.key;
+}
+
+void apply_piece_feature_delta(
+    X2K16PawnAccumulator& accumulator,
+    const FeatureLists& before,
+    const FeatureLists& after,
+    RowAddBackend backend
+) noexcept {
+    for (int perspective_index = WHITE;
+         perspective_index <= BLACK;
+         ++perspective_index) {
+        const std::size_t p = static_cast<std::size_t>(perspective_index);
+        apply_sorted_row_delta(
+            before.piece[p],
+            after.piece[p],
+            [&] (int row) noexcept {
+                add_piece_row(accumulator.piece[p], row, backend);
+            },
+            [&] (int row) noexcept {
+                sub_piece_row(accumulator.piece[p], row, backend);
+            }
+        );
+    }
+}
+
+void apply_pawn_pair_feature_delta(
+    X2K16PawnAccumulator& accumulator,
+    const FeatureLists& before,
+    const FeatureLists& after,
+    RowAddBackend backend
+) noexcept {
+    for (int perspective_index = WHITE;
+         perspective_index <= BLACK;
+         ++perspective_index) {
+        const std::size_t p = static_cast<std::size_t>(perspective_index);
+        apply_sorted_row_delta(
+            before.pawn_pair[p],
+            after.pawn_pair[p],
+            [&] (int row) noexcept {
+                add_pawn_pair_row(accumulator.pawn[p], row, backend);
+            },
+            [&] (int row) noexcept {
+                sub_pawn_pair_row(accumulator.pawn[p], row, backend);
+            }
+        );
+    }
+}
+
+void update_piece_pawn_incremental(
+    X2K16PawnAccumulator& accumulator,
+    const Position& before,
+    const Position& after,
+    Move move,
+    const StateInfo& state,
+    RowAddBackend backend
+) noexcept {
+    if (!accumulator.piece_valid || !accumulator.pawn_valid
+        || accumulator.position_hash != before.key) {
+        rebuild_piece_pawn_incremental(after, accumulator, backend);
+        return;
+    }
+
+    const Piece moving = piece_on(before, from_sq(move));
+    const PieceType moving_type = type_of(moving);
+    const bool king_moved =
+        moving != PIECE_NONE && moving_type == KING;
+    const bool pawn_affected =
+        (moving != PIECE_NONE && moving_type == PAWN)
+        || (state.captured != PIECE_NONE
+            && type_of(state.captured) == PAWN);
+
+    FeatureLists before_lists{};
+    FeatureLists after_lists{};
+    const bool need_lists = !king_moved || pawn_affected;
+    if (need_lists) {
+        before_lists = collect_features(before);
+        after_lists = collect_features(after);
+    }
+
+    if (king_moved) {
+        rebuild_piece_accumulators(
+            after,
+            accumulator.piece,
+            backend
+        );
+        accumulator.piece_valid = true;
+    } else {
+        apply_piece_feature_delta(
+            accumulator,
+            before_lists,
+            after_lists,
+            backend
+        );
+    }
+
+    if (pawn_affected) {
+        apply_pawn_pair_feature_delta(
+            accumulator,
+            before_lists,
+            after_lists,
+            backend
+        );
+    }
+
+    accumulator.pawn_valid = true;
+    accumulator.attack_valid = false;
+    accumulator.position_hash = after.key;
+}
+
+[[nodiscard]] int evaluate_piece_pawn_incremental(
+    const Position& pos,
+    X2K16PawnAccumulator& accumulator,
+    RowAddBackend backend
+) noexcept {
+    if (!accumulator.piece_valid || !accumulator.pawn_valid
+        || accumulator.position_hash != pos.key) {
+        rebuild_piece_pawn_incremental(pos, accumulator, backend);
+    }
+
+    rebuild_attack_accumulators(pos, accumulator.attack, backend);
+    accumulator.attack_valid = true;
+    return score_from_output(forward(
+        pos,
+        accumulator.piece,
+        accumulator.attack,
+        accumulator.pawn
+    ));
+}
+
+struct BranchChecksums {
+    i64 piece = 0;
+    i64 attack = 0;
+    i64 pawn = 0;
+};
+
+[[nodiscard]] BranchChecksums branch_checksums(
+    const X2K16PawnAccumulator& accumulator
+) noexcept {
+    return {
+        checksum_branch(accumulator.piece),
+        checksum_branch(accumulator.attack),
+        checksum_branch(accumulator.pawn)
+    };
+}
+
 } // namespace
 
 bool load(const std::string& file_path) {
@@ -1621,7 +2785,7 @@ int evaluate_reference(
     std::array<PieceAccumulator, COLOR_NB> piece_accumulators{};
     std::array<AttackAccumulator, COLOR_NB> attack_accumulators{};
     std::array<PawnPairAccumulator, COLOR_NB> pawn_pair_accumulators{};
-    rebuild_accumulators(
+    rebuild_accumulators_formula(
         pos,
         piece_accumulators,
         attack_accumulators,
@@ -1633,6 +2797,47 @@ int evaluate_reference(
         attack_accumulators,
         pawn_pair_accumulators
     ));
+}
+
+[[nodiscard]] int evaluate_lut_with_backend(
+    const Position& pos,
+    RowAddBackend backend
+) noexcept {
+    if (!loaded())
+        return 0;
+
+    X2K16PawnAccumulator accumulator{};
+    reset_accumulator_lut(accumulator, pos, backend);
+    return score_from_output(forward(
+        pos,
+        accumulator.piece,
+        accumulator.attack,
+        accumulator.pawn
+    ));
+}
+
+[[nodiscard]] int evaluate_lut_scalar(
+    const Position& pos
+) noexcept {
+    return evaluate_lut_with_backend(pos, RowAddBackend::Scalar);
+}
+
+[[nodiscard]] int evaluate_lut_avx2(
+    const Position& pos
+) noexcept {
+    return evaluate_lut_with_backend(pos, RowAddBackend::Avx2);
+}
+
+int evaluate_lut(
+    const Position& pos,
+    const memory::Memory& mem
+) noexcept {
+    (void)mem;
+    return evaluate_lut_with_backend(pos, active_rowadd_backend());
+}
+
+const char* backend_name() noexcept {
+    return rowadd_backend_name(active_rowadd_backend());
 }
 
 void debug_dump_evaluation(
@@ -1787,6 +2992,543 @@ void debug_dump_evaluation(
         << lists.pawn_pair[ntm].size() << '\n';
 }
 
+void debug_compare_evaluation(
+    const Position& pos,
+    const memory::Memory& mem,
+    std::ostream& output
+) {
+    (void)mem;
+    if (!loaded()) {
+        output << "info string MNUE-X2-K16-pawn-Q8-A384 unavailable: "
+            << last_error() << '\n';
+        return;
+    }
+
+    const FeatureLists formula_features = collect_features_formula(pos);
+    const FeatureLists lut_features = collect_features(pos);
+
+    std::array<PieceAccumulator, COLOR_NB> formula_piece{};
+    std::array<AttackAccumulator, COLOR_NB> formula_attack{};
+    std::array<PawnPairAccumulator, COLOR_NB> formula_pawn{};
+    rebuild_accumulators_formula(
+        pos,
+        formula_piece,
+        formula_attack,
+        formula_pawn
+    );
+
+    X2K16PawnAccumulator scalar_lut_accumulator{};
+    reset_accumulator_lut(
+        scalar_lut_accumulator,
+        pos,
+        RowAddBackend::Scalar
+    );
+    X2K16PawnAccumulator avx2_lut_accumulator{};
+    reset_accumulator_lut(
+        avx2_lut_accumulator,
+        pos,
+        RowAddBackend::Avx2
+    );
+
+    const int reference_raw = score_from_output(forward(
+        pos,
+        formula_piece,
+        formula_attack,
+        formula_pawn
+    ));
+    const int scalar_lut_raw = score_from_output(forward(
+        pos,
+        scalar_lut_accumulator.piece,
+        scalar_lut_accumulator.attack,
+        scalar_lut_accumulator.pawn
+    ));
+    const int avx2_lut_raw = score_from_output(forward(
+        pos,
+        avx2_lut_accumulator.piece,
+        avx2_lut_accumulator.attack,
+        avx2_lut_accumulator.pawn
+    ));
+    const int reference_cp =
+        magnus::mnue::search_score_to_cp(reference_raw, pos);
+    const int scalar_lut_cp =
+        magnus::mnue::search_score_to_cp(scalar_lut_raw, pos);
+    const int avx2_lut_cp =
+        magnus::mnue::search_score_to_cp(avx2_lut_raw, pos);
+
+    output << "info string x2 compare reference_raw "
+        << reference_raw
+        << " scalar_lut_raw " << scalar_lut_raw
+        << " avx2_lut_raw " << avx2_lut_raw
+        << " diff_ref_lut " << (scalar_lut_raw - reference_raw)
+        << " diff_lut_avx2 " << (avx2_lut_raw - scalar_lut_raw)
+        << " feature_rows_equal "
+        << (feature_lists_equal(formula_features, lut_features) ? 1 : 0)
+        << '\n';
+    output << "info string x2 compare reference_cp "
+        << reference_cp
+        << " scalar_lut_cp " << scalar_lut_cp
+        << " avx2_lut_cp " << avx2_lut_cp
+        << " cp_diff_ref_lut " << (scalar_lut_cp - reference_cp)
+        << " cp_diff_lut_avx2 " << (avx2_lut_cp - scalar_lut_cp)
+        << '\n';
+    output << "info string x2 compare backend_reference scalar-full-rebuild"
+        << " backend_scalar scalar-lut-full-rebuild"
+        << " backend_active " << backend_name()
+        << " avx2_compiled " << (avx2_rowadd_compiled() ? 1 : 0)
+        << '\n';
+    output << "info string x2 compare fen current old_raw "
+        << reference_raw << " new_raw " << scalar_lut_raw
+        << " diff " << (scalar_lut_raw - reference_raw) << '\n';
+    output << "info string x2 compare fen current old_cp "
+        << reference_cp << " new_cp " << scalar_lut_cp
+        << " cp_diff " << (scalar_lut_cp - reference_cp) << '\n';
+    output << "info string x2 compare feature_rows_equal "
+        << (feature_lists_equal(formula_features, lut_features) ? 1 : 0)
+        << '\n';
+
+    for (int perspective_index = WHITE;
+         perspective_index <= BLACK;
+         ++perspective_index) {
+        const std::size_t p = static_cast<std::size_t>(perspective_index);
+        const char* color = perspective_index == WHITE ? "white" : "black";
+        output << "info string x2 compare " << color
+            << " piece_formula " << formula_features.piece[p].size()
+            << " piece_lut " << lut_features.piece[p].size()
+            << " piece_first_diff "
+            << first_vector_diff(
+                formula_features.piece[p],
+                lut_features.piece[p]
+            )
+            << '\n';
+        output << "info string x2 compare " << color
+            << " attack_formula " << formula_features.attack[p].size()
+            << " attack_lut " << lut_features.attack[p].size()
+            << " attack_first_diff "
+            << first_vector_diff(
+                formula_features.attack[p],
+                lut_features.attack[p]
+            )
+            << '\n';
+        output << "info string x2 compare " << color
+            << " pawn_formula " << formula_features.pawn_pair[p].size()
+            << " pawn_lut " << lut_features.pawn_pair[p].size()
+            << " pawn_first_diff "
+            << first_vector_diff(
+                formula_features.pawn_pair[p],
+                lut_features.pawn_pair[p]
+            )
+            << '\n';
+    }
+}
+
+void debug_profile_evaluation(
+    const Position& pos,
+    const memory::Memory& mem,
+    std::ostream& output
+) {
+    if (!loaded()) {
+        output << "info string MNUE-X2-K16-pawn-Q8-A384 unavailable: "
+            << last_error() << '\n';
+        return;
+    }
+
+    const EvaluationProfile profile =
+        profile_lut_evaluation(pos, active_rowadd_backend());
+    output << "info string mnue x2k16 profile backend "
+        << backend_name() << '\n';
+    output << "info string mnue x2k16 profile raw "
+        << profile.raw << '\n';
+    output << "info string mnue x2k16 profile searchcp "
+        << profile.searchcp << '\n';
+    output << "info string mnue x2k16 profile evals 1\n";
+    output << "info string mnue x2k16 profile total_eval_time_us "
+        << profile.total_eval_time_us << '\n';
+    output << "info string mnue x2k16 profile feature_gen_time_us "
+        << profile.feature_gen_time_us << '\n';
+    output << "info string mnue x2k16 profile piece_l0_time_us "
+        << profile.piece_l0_time_us << '\n';
+    output << "info string mnue x2k16 profile attack_l0_time_us "
+        << profile.attack_l0_time_us << '\n';
+    output << "info string mnue x2k16 profile pawn_l0_time_us "
+        << profile.pawn_l0_time_us << '\n';
+    output << "info string mnue x2k16 profile merge_activation_time_us "
+        << profile.merge_activation_time_us << '\n';
+    output << "info string mnue x2k16 profile head_time_us "
+        << profile.head_time_us << '\n';
+    output << "info string mnue x2k16 profile active_piece_rows "
+        << profile.active_piece_rows << '\n';
+    output << "info string mnue x2k16 profile active_attack_rows "
+        << profile.active_attack_rows << '\n';
+    output << "info string mnue x2k16 profile active_pawn_rows "
+        << profile.active_pawn_rows << '\n';
+
+    constexpr int WarmupIterations = 16;
+    constexpr int BenchIterations = 128;
+    int reference_checksum = 0;
+    int scalar_lut_checksum = 0;
+    int avx2_lut_checksum = 0;
+    int incremental_checksum = 0;
+    X2K16PawnAccumulator incremental_accumulator{};
+    rebuild_piece_pawn_incremental(
+        pos,
+        incremental_accumulator,
+        active_rowadd_backend()
+    );
+
+    for (int iteration = 0; iteration < WarmupIterations; ++iteration) {
+        reference_checksum += evaluate_reference(pos, mem);
+        scalar_lut_checksum += evaluate_lut_scalar(pos);
+        avx2_lut_checksum += evaluate_lut_avx2(pos);
+        incremental_checksum += evaluate_piece_pawn_incremental(
+            pos,
+            incremental_accumulator,
+            active_rowadd_backend()
+        );
+    }
+
+    const auto reference_begin = Clock::now();
+    for (int iteration = 0; iteration < BenchIterations; ++iteration)
+        reference_checksum += evaluate_reference(pos, mem);
+    const auto reference_end = Clock::now();
+
+    const auto scalar_lut_begin = Clock::now();
+    for (int iteration = 0; iteration < BenchIterations; ++iteration)
+        scalar_lut_checksum += evaluate_lut_scalar(pos);
+    const auto scalar_lut_end = Clock::now();
+
+    const auto avx2_lut_begin = Clock::now();
+    for (int iteration = 0; iteration < BenchIterations; ++iteration)
+        avx2_lut_checksum += evaluate_lut_avx2(pos);
+    const auto avx2_lut_end = Clock::now();
+
+    const auto incremental_begin = Clock::now();
+    for (int iteration = 0; iteration < BenchIterations; ++iteration) {
+        incremental_checksum += evaluate_piece_pawn_incremental(
+            pos,
+            incremental_accumulator,
+            active_rowadd_backend()
+        );
+    }
+    const auto incremental_end = Clock::now();
+
+    const i64 reference_us = std::max<i64>(
+        1,
+        elapsed_us(reference_begin, reference_end)
+    );
+    const i64 scalar_lut_us = std::max<i64>(
+        1,
+        elapsed_us(scalar_lut_begin, scalar_lut_end)
+    );
+    const i64 avx2_lut_us = std::max<i64>(
+        1,
+        elapsed_us(avx2_lut_begin, avx2_lut_end)
+    );
+    const i64 incremental_us = std::max<i64>(
+        1,
+        elapsed_us(incremental_begin, incremental_end)
+    );
+    const double reference_eps =
+        static_cast<double>(BenchIterations) * 1000000.0
+        / static_cast<double>(reference_us);
+    const double scalar_lut_eps =
+        static_cast<double>(BenchIterations) * 1000000.0
+        / static_cast<double>(scalar_lut_us);
+    const double avx2_lut_eps =
+        static_cast<double>(BenchIterations) * 1000000.0
+        / static_cast<double>(avx2_lut_us);
+    const double incremental_eps =
+        static_cast<double>(BenchIterations) * 1000000.0
+        / static_cast<double>(incremental_us);
+
+    output << "info string mnue x2k16 profile warmup_iterations "
+        << WarmupIterations << '\n';
+    output << "info string mnue x2k16 profile bench_iterations "
+        << BenchIterations << '\n';
+    output << "info string mnue x2k16 profile avx2_compiled "
+        << (avx2_rowadd_compiled() ? 1 : 0) << '\n';
+    output << "info string mnue x2k16 profile oracle_total_time_us "
+        << reference_us << '\n';
+    output << "info string mnue x2k16 profile scalar_lut_total_time_us "
+        << scalar_lut_us << '\n';
+    output << "info string mnue x2k16 profile avx2_lut_total_time_us "
+        << avx2_lut_us << '\n';
+    output << "info string mnue x2k16 profile incremental_total_time_us "
+        << incremental_us << '\n';
+    output << "info string mnue x2k16 profile lut_total_time_us "
+        << (active_rowadd_backend() == RowAddBackend::Avx2
+                ? avx2_lut_us
+                : scalar_lut_us)
+        << '\n';
+    output << "info string mnue x2k16 profile oracle_evals_per_sec "
+        << static_cast<i64>(reference_eps) << '\n';
+    output << "info string mnue x2k16 profile scalar_lut_evals_per_sec "
+        << static_cast<i64>(scalar_lut_eps) << '\n';
+    output << "info string mnue x2k16 profile avx2_lut_evals_per_sec "
+        << static_cast<i64>(avx2_lut_eps) << '\n';
+    output << "info string mnue x2k16 profile incremental_evals_per_sec "
+        << static_cast<i64>(incremental_eps) << '\n';
+    output << "info string mnue x2k16 profile lut_evals_per_sec "
+        << static_cast<i64>(
+            active_rowadd_backend() == RowAddBackend::Avx2
+                ? avx2_lut_eps
+                : scalar_lut_eps
+        ) << '\n';
+    output << "info string mnue x2k16 profile bench_raw_diff "
+        << (scalar_lut_checksum - reference_checksum) << '\n';
+    output << "info string mnue x2k16 profile bench_raw_diff_lut_avx2 "
+        << (avx2_lut_checksum - scalar_lut_checksum) << '\n';
+    output << "info string mnue x2k16 profile bench_raw_diff_full_inc "
+        << (incremental_checksum - avx2_lut_checksum) << '\n';
+}
+
+void debug_stress_evaluation(
+    const Position& pos,
+    const memory::Memory& mem,
+    int positions,
+    std::ostream& output
+) {
+    if (!loaded()) {
+        output << "info string MNUE-X2-K16-pawn-Q8-A384 unavailable: "
+            << last_error() << '\n';
+        return;
+    }
+
+    positions = std::clamp(positions, 1, 100000);
+    Position work = pos;
+    u32 random_state = 0x9E3779B9u
+        ^ static_cast<u32>(pos.key)
+        ^ static_cast<u32>(positions);
+
+    int checked = 0;
+    for (; checked < positions; ++checked) {
+        const int scalar_raw = evaluate_lut_scalar(work);
+        const int avx2_raw = evaluate_lut_avx2(work);
+        if (scalar_raw != avx2_raw) {
+            const FeatureLists lists = collect_features(work);
+            output << "info string mnue x2k16 stress mismatch index "
+                << checked << '\n';
+            output << "info string mnue x2k16 stress fen "
+                << position_to_fen(work) << '\n';
+            output << "info string mnue x2k16 stress scalar_lut_raw "
+                << scalar_raw << " avx2_lut_raw " << avx2_raw
+                << " diff " << (avx2_raw - scalar_raw) << '\n';
+            output << "info string mnue x2k16 stress active_piece_rows "
+                << active_rows(lists.piece)
+                << " active_attack_rows " << active_rows(lists.attack)
+                << " active_pawn_rows " << active_rows(lists.pawn_pair)
+                << '\n';
+            return;
+        }
+
+        MoveList legal_moves{};
+        generate_legal(work, mem, legal_moves);
+        if (legal_moves.size <= 0) {
+            work = pos;
+            continue;
+        }
+
+        const int index = static_cast<int>(
+            next_stress_random(random_state)
+            % static_cast<u32>(legal_moves.size)
+        );
+        StateInfo state{};
+        make_move(work, legal_moves.moves[index], mem.tables, state);
+    }
+
+    output << "info string mnue x2k16 stress positions "
+        << checked
+        << " scalar_lut_equals_avx2 1"
+        << " avx2_compiled " << (avx2_rowadd_compiled() ? 1 : 0)
+        << '\n';
+    output << "info string mnue x2k16 stress final_fen "
+        << position_to_fen(work) << '\n';
+}
+
+void debug_incremental_compare(
+    const Position& pos,
+    const memory::Memory& mem,
+    std::ostream& output
+) {
+    (void)mem;
+    if (!loaded()) {
+        output << "info string MNUE-X2-K16-pawn-Q8-A384 unavailable: "
+            << last_error() << '\n';
+        return;
+    }
+
+    const RowAddBackend backend = active_rowadd_backend();
+    const int ref_raw = evaluate_reference(pos, mem);
+    const int scalar_lut_raw = evaluate_lut_scalar(pos);
+    const int avx2_full_raw = evaluate_lut_avx2(pos);
+
+    X2K16PawnAccumulator full_accumulator{};
+    reset_accumulator_lut(full_accumulator, pos, backend);
+
+    X2K16PawnAccumulator incremental_accumulator{};
+    rebuild_piece_pawn_incremental(pos, incremental_accumulator, backend);
+    const int inc_raw = evaluate_piece_pawn_incremental(
+        pos,
+        incremental_accumulator,
+        backend
+    );
+
+    const BranchChecksums full_checksums =
+        branch_checksums(full_accumulator);
+    const BranchChecksums inc_checksums =
+        branch_checksums(incremental_accumulator);
+
+    output << "info string x2 inc compare ref_raw " << ref_raw
+        << " scalar_lut_raw " << scalar_lut_raw
+        << " avx2_full_raw " << avx2_full_raw
+        << " inc_raw " << inc_raw
+        << " diff_full_inc " << (inc_raw - avx2_full_raw)
+        << '\n';
+    output << "info string x2 inc compare backend_full "
+        << backend_name()
+        << " backend_inc avx2-piece-pawn-inc"
+        << " avx2_compiled " << (avx2_rowadd_compiled() ? 1 : 0)
+        << '\n';
+    output << "info string x2 inc compare checksum_piece_full "
+        << full_checksums.piece
+        << " checksum_piece_inc " << inc_checksums.piece
+        << " equal " << (full_checksums.piece == inc_checksums.piece ? 1 : 0)
+        << '\n';
+    output << "info string x2 inc compare checksum_pawn_full "
+        << full_checksums.pawn
+        << " checksum_pawn_inc " << inc_checksums.pawn
+        << " equal " << (full_checksums.pawn == inc_checksums.pawn ? 1 : 0)
+        << '\n';
+    output << "info string x2 inc compare checksum_attack_full "
+        << full_checksums.attack
+        << " checksum_attack_inc " << inc_checksums.attack
+        << " equal " << (full_checksums.attack == inc_checksums.attack ? 1 : 0)
+        << '\n';
+}
+
+void debug_incremental_stress(
+    const Position& pos,
+    const memory::Memory& mem,
+    int positions,
+    std::ostream& output
+) {
+    if (!loaded()) {
+        output << "info string MNUE-X2-K16-pawn-Q8-A384 unavailable: "
+            << last_error() << '\n';
+        return;
+    }
+
+    positions = std::clamp(positions, 1, 100000);
+    const RowAddBackend backend = active_rowadd_backend();
+    Position work = pos;
+    X2K16PawnAccumulator incremental_accumulator{};
+    rebuild_piece_pawn_incremental(work, incremental_accumulator, backend);
+    u32 random_state = 0xC2B2AE35u
+        ^ static_cast<u32>(pos.key >> 32)
+        ^ static_cast<u32>(positions);
+    std::string last_move = "root";
+
+    int checked = 0;
+    for (; checked < positions; ++checked) {
+        const int full_raw = evaluate_lut_avx2(work);
+        const int inc_raw = evaluate_piece_pawn_incremental(
+            work,
+            incremental_accumulator,
+            backend
+        );
+
+        X2K16PawnAccumulator full_accumulator{};
+        reset_accumulator_lut(full_accumulator, work, backend);
+        const BranchChecksums full_checksums =
+            branch_checksums(full_accumulator);
+        const BranchChecksums inc_checksums =
+            branch_checksums(incremental_accumulator);
+        const bool checksums_equal =
+            full_checksums.piece == inc_checksums.piece
+            && full_checksums.pawn == inc_checksums.pawn
+            && full_checksums.attack == inc_checksums.attack;
+
+        if (full_raw != inc_raw || !checksums_equal) {
+            const FeatureLists lists = collect_features(work);
+            output << "info string x2 incstress mismatch index "
+                << checked << '\n';
+            output << "info string x2 incstress fen "
+                << position_to_fen(work) << '\n';
+            output << "info string x2 incstress last_move "
+                << last_move << '\n';
+            output << "info string x2 incstress full_raw "
+                << full_raw << " incremental_raw " << inc_raw
+                << " diff " << (inc_raw - full_raw) << '\n';
+            output << "info string x2 incstress checksum_piece_full "
+                << full_checksums.piece
+                << " checksum_piece_inc " << inc_checksums.piece
+                << " equal "
+                << (full_checksums.piece == inc_checksums.piece ? 1 : 0)
+                << '\n';
+            output << "info string x2 incstress checksum_pawn_full "
+                << full_checksums.pawn
+                << " checksum_pawn_inc " << inc_checksums.pawn
+                << " equal "
+                << (full_checksums.pawn == inc_checksums.pawn ? 1 : 0)
+                << '\n';
+            output << "info string x2 incstress checksum_attack_full "
+                << full_checksums.attack
+                << " checksum_attack_inc " << inc_checksums.attack
+                << " equal "
+                << (full_checksums.attack == inc_checksums.attack ? 1 : 0)
+                << '\n';
+            output << "info string x2 incstress active_piece_rows "
+                << active_rows(lists.piece)
+                << " active_attack_rows " << active_rows(lists.attack)
+                << " active_pawn_rows " << active_rows(lists.pawn_pair)
+                << '\n';
+            return;
+        }
+
+        MoveList legal_moves{};
+        generate_legal(work, mem, legal_moves);
+        if (legal_moves.size <= 0) {
+            work = pos;
+            rebuild_piece_pawn_incremental(
+                work,
+                incremental_accumulator,
+                backend
+            );
+            last_move = "reset";
+            continue;
+        }
+
+        const int index = static_cast<int>(
+            next_stress_random(random_state)
+            % static_cast<u32>(legal_moves.size)
+        );
+        const Move move = legal_moves.moves[index];
+        const Position before = work;
+        StateInfo state{};
+        make_move(work, move, mem.tables, state);
+        update_piece_pawn_incremental(
+            incremental_accumulator,
+            before,
+            work,
+            move,
+            state,
+            backend
+        );
+        last_move = move_to_simple_uci(move);
+    }
+
+    output << "info string x2 incstress positions "
+        << checked
+        << " full_equals_incremental 1"
+        << " avx2_compiled " << (avx2_rowadd_compiled() ? 1 : 0)
+        << '\n';
+    output << "info string x2 incstress backend_full "
+        << backend_name()
+        << " backend_inc avx2-piece-pawn-inc"
+        << '\n';
+    output << "info string x2 incstress final_fen "
+        << position_to_fen(work) << '\n';
+}
+
 void debug_dump_network(std::ostream& output) {
     output << "info string MNUE-X2-K16-pawn-Q8-A384 loaded "
         << (loaded() ? 1 : 0) << '\n';
@@ -1798,7 +3540,9 @@ void debug_dump_network(std::ostream& output) {
 
     output << "info string loaded MNUE-X2-K16-pawn-Q8-A384 "
         << path() << '\n';
-    output << "info string MNUE-X2-K16-pawn-Q8-A384 backend: scalar-full-rebuild\n";
+    output << "info string MNUE-X2-K16-pawn-Q8-A384 backend: "
+        << backend_name() << '\n';
+    output << "info string MNUE-X2-K16-pawn-Q8-A384 oracle: scalar-full-rebuild\n";
     output << "info string architecture X2-K16-pawn-Q8-A384 version "
         << kVersion << " arch " << Layout::ArchId
         << " feature_version " << Layout::FeatureVersion << '\n';
@@ -1826,6 +3570,19 @@ void debug_dump_network(std::ostream& output) {
     output << "info string network size "
         << static_cast<double>(network_bytes()) / 1048576.0
         << " MiB bytes " << network_bytes() << '\n';
+    output << "info string k16_bucket white_e1 "
+        << king_bucket16(relative_square(WHITE, 4, false))
+        << " white_a1 "
+        << king_bucket16(relative_square(WHITE, 0, false))
+        << " white_h1 "
+        << king_bucket16(relative_square(WHITE, 7, false))
+        << " black_e8 "
+        << king_bucket16(relative_square(BLACK, 60, false))
+        << " black_a8 "
+        << king_bucket16(relative_square(BLACK, 56, false))
+        << " black_h8 "
+        << king_bucket16(relative_square(BLACK, 63, false))
+        << '\n';
 }
 
 void debug_dump_features(const Position& pos, std::ostream& output) {

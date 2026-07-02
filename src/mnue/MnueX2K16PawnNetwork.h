@@ -86,12 +86,44 @@ void unload() noexcept;
     const Position& pos,
     const memory::Memory& mem
 ) noexcept;
+[[nodiscard]] int evaluate_lut(
+    const Position& pos,
+    const memory::Memory& mem
+) noexcept;
+[[nodiscard]] const char* backend_name() noexcept;
 
 void debug_dump_network(std::ostream& output);
 void debug_dump_features(const Position& pos, std::ostream& output);
 void debug_dump_evaluation(
     const Position& pos,
     const memory::Memory& mem,
+    std::ostream& output
+);
+void debug_compare_evaluation(
+    const Position& pos,
+    const memory::Memory& mem,
+    std::ostream& output
+);
+void debug_profile_evaluation(
+    const Position& pos,
+    const memory::Memory& mem,
+    std::ostream& output
+);
+void debug_stress_evaluation(
+    const Position& pos,
+    const memory::Memory& mem,
+    int positions,
+    std::ostream& output
+);
+void debug_incremental_compare(
+    const Position& pos,
+    const memory::Memory& mem,
+    std::ostream& output
+);
+void debug_incremental_stress(
+    const Position& pos,
+    const memory::Memory& mem,
+    int positions,
     std::ostream& output
 );
 

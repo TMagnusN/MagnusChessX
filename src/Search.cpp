@@ -2020,7 +2020,7 @@ struct Searcher {
         if (use_p2_mnue())
             return mnue::eval_p2(pos, p2_accumulator_stack);
         if (use_x2k16_mnue())
-            return mnue::x2k16::evaluate_reference(pos, mem);
+            return mnue::x2k16::evaluate_lut(pos, mem);
         return 0;
     }
 
