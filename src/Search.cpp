@@ -45,6 +45,7 @@ SOFTWARE.
 #include "board/Position.h"
 #include "Nmp.h"
 #include "mnue/Mnue.h"
+#include "mnue/MnueX2K16PawnNetwork.h"
 #include "See.h"
 #include "syzygy/Syzygy.h"
 
@@ -1982,8 +1983,17 @@ struct Searcher {
         return move_gives_check(pos, mem, move);
     }
 
+    [[nodiscard]] inline bool use_p2_mnue() const noexcept {
+        return limits.eval_kind == SearchEvalKind::P2 && mnue::p2_loaded();
+    }
+
+    [[nodiscard]] inline bool use_x2k16_mnue() const noexcept {
+        return limits.eval_kind == SearchEvalKind::X2K16
+            && mnue::x2k16::loaded();
+    }
+
     [[nodiscard]] inline bool use_mnue() const noexcept {
-        return mnue::p2_loaded();
+        return use_p2_mnue() || use_x2k16_mnue();
     }
 
     inline void make_search_move(
@@ -1991,7 +2001,7 @@ struct Searcher {
         Move move,
         StateInfo& st
     ) noexcept {
-        if (use_mnue())
+        if (use_p2_mnue())
             p2_accumulator_stack.push(pos, move);
         make_move(pos, move, mem.tables, st);
     }
@@ -2002,13 +2012,15 @@ struct Searcher {
         const StateInfo& st
     ) noexcept {
         unmake_move(pos, move, mem.tables, st);
-        if (use_mnue())
+        if (use_p2_mnue())
             p2_accumulator_stack.pop();
     }
 
     [[nodiscard]] inline int evaluate_raw_position(const Position& pos) const noexcept {
-        if (use_mnue())
+        if (use_p2_mnue())
             return mnue::eval_p2(pos, p2_accumulator_stack);
+        if (use_x2k16_mnue())
+            return mnue::x2k16::evaluate_reference(pos, mem);
         return 0;
     }
 

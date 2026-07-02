@@ -11,5 +11,8 @@ cuda = ["bullet_lib/cuda"]
 
 [dependencies]
 bullet_lib = { path = "D:/bullet/crates/bullet_lib" }
+bullet-trainer = { path = "D:/bullet/crates/trainer" }
+bullet-gpu = { path = "D:/bullet/crates/gpu" }
+bullet-compiler = { path = "D:/bullet/crates/compiler" }
 bulletformat = "1.8.0"
 

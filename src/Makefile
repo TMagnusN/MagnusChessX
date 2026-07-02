@@ -58,7 +58,8 @@ SRC := \
 	Time.cpp \
 	TT.cpp \
 	Uci.cpp \
-	mnue/Mnue.cpp
+	mnue/Mnue.cpp \
+	mnue/MnueX2K16PawnNetwork.cpp
 
 FATHOM_DIR := ../third_party/fathom
 FATHOM_OBJ := $(OBJ_DIR)/FathomTbProbe.o

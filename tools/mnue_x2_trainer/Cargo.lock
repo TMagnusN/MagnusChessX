@@ -169,6 +169,9 @@ checksum = "88904434abc2901f197fe8cc55f0445e7ded921dba5911dad2e2b39b48e663c4"
 name = "mnue_x2_trainer"
 version = "0.1.0"
 dependencies = [
+ "bullet-compiler",
+ "bullet-gpu",
+ "bullet-trainer",
  "bullet_lib",
  "bulletformat",
 ]

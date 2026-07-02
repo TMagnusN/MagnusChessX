@@ -212,6 +212,12 @@ struct RootMsvEntry {
 
 struct RootMsvShared;
 
+enum class SearchEvalKind : std::uint8_t {
+    None,
+    P2,
+    X2K16
+};
+
 /*
  * SearchLimits — 搜尋限制參數集合
  *
@@ -250,6 +256,7 @@ struct SearchLimits {
     bool use_msv_smp = false;           // Search-local MSV-SMP root scheduling credit
     bool msv_info = false;              // Emit MSV-SMP debug info strings
     int multipv = 1;                    // Number of root principal variations to report
+    SearchEvalKind eval_kind = SearchEvalKind::P2; // Active MNUE evaluator selected by UCI
 
     // --- 對局歷史（供重複局面檢測）---
     Key game_history_keys[MAX_GAME_HISTORY]{}; // 歷史局面的 Zobrist 鍵值

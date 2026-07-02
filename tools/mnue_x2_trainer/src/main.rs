@@ -34,6 +34,8 @@ use bullet_lib::{
 };
 use bulletformat::ChessBoard;
 
+mod k16;
+
 const INPUT_BUCKETS: usize = 10;
 const OUTPUT_BUCKETS: usize = 8;
 const RELATIVE_COLOURS: usize = 2;
@@ -420,6 +422,10 @@ impl OutputBuckets<ChessBoard> for MnueX2Output {
 }
 
 fn main() {
+    if k16::maybe_run_from_args() {
+        return;
+    }
+
     assert_eq!(PIECE_INPUTS, 7_680);
     assert_eq!(attack_index_table().size, ATTACK_INPUTS);
     assert_eq!(INPUT_SIZE, 97_728);

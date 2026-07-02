@@ -31,6 +31,7 @@ SOFTWARE.
 #include <chrono>
 #include <charconv>
 #include <cmath>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -48,6 +49,7 @@ SOFTWARE.
 #include "Common.h"
 #include "Memory.h"
 #include "mnue/Mnue.h"
+#include "mnue/MnueX2K16PawnNetwork.h"
 #include "Search.h"
 #include "syzygy/Syzygy.h"
 #include "Time.h"
@@ -96,6 +98,51 @@ constexpr int MIN_UCI_CONTEMPT = -10000;
 constexpr int MAX_UCI_CONTEMPT = 10000;
 constexpr int DEFAULT_BENCH_DEPTH = 12;
 constexpr int MAX_SEARCH_THREADS = 512;
+
+constexpr std::uint32_t X2K16_MNUE_MAGIC = 0x45554E4D;
+
+[[nodiscard]] std::uint32_t read_u32_le(
+    const std::array<unsigned char, 16>& bytes,
+    int field
+) noexcept {
+    const int offset = field * 4;
+    return static_cast<std::uint32_t>(bytes[static_cast<std::size_t>(offset)])
+        | (static_cast<std::uint32_t>(bytes[static_cast<std::size_t>(offset + 1)]) << 8)
+        | (static_cast<std::uint32_t>(bytes[static_cast<std::size_t>(offset + 2)]) << 16)
+        | (static_cast<std::uint32_t>(bytes[static_cast<std::size_t>(offset + 3)]) << 24);
+}
+
+[[nodiscard]] bool looks_like_x2k16_file(const std::string& path) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in)
+        return false;
+
+    std::array<unsigned char, 16> header{};
+    in.read(
+        reinterpret_cast<char*>(header.data()),
+        static_cast<std::streamsize>(header.size())
+    );
+    if (in.gcount() < 12)
+        return false;
+
+    return read_u32_le(header, 0) == X2K16_MNUE_MAGIC
+        && read_u32_le(header, 2)
+            == static_cast<std::uint32_t>(mnue::x2k16::Layout::ArchId);
+}
+
+[[nodiscard]] const char* search_eval_kind_name(
+    search::SearchEvalKind kind
+) noexcept {
+    switch (kind) {
+        case search::SearchEvalKind::P2:
+            return "p2";
+        case search::SearchEvalKind::X2K16:
+            return "x2-k16-pawn-q8-a384";
+        case search::SearchEvalKind::None:
+            return "none";
+    }
+    return "none";
+}
 
 constexpr std::array<std::string_view, 50> SEARCH_BENCH_FENS{{
     "rnb1k2r/pp2bp1p/2p1pp2/q7/8/1P6/PBPPQPPP/2KR1BNR w kq - 4 9",
@@ -681,6 +728,7 @@ struct SearchBenchResult {
     std::size_t hash_mb,
     std::size_t threads,
     std::ostream& out,
+    search::SearchEvalKind eval_kind = search::SearchEvalKind::P2,
     bool quiet = false
 ) {
     const int search_threads = std::clamp<int>(
@@ -711,6 +759,7 @@ struct SearchBenchResult {
         limits.thread_id = 0;
         limits.report_info = false;
         limits.recover_ponder_pv = false;
+        limits.eval_kind = eval_kind;
 
         const SearchBenchResult res =
             benchmark_search_position(bench_pos, mem, limits, nullptr);
@@ -745,7 +794,10 @@ struct SearchBenchResult {
         out << "depth " << depth
             << " hash " << hash_mb
             << " threads " << search_threads
-            << " evaluator " << mnue::p2_eval_name()
+            << " evaluator "
+            << (eval_kind == search::SearchEvalKind::X2K16
+                ? search_eval_kind_name(eval_kind)
+                : mnue::p2_eval_name())
             << " checksum " << checksum
             << '\n';
     }
@@ -837,6 +889,7 @@ struct UciSession {
     int syzygy_probe_limit = syzygy::DEFAULT_PROBE_LIMIT;
     bool syzygy_50_move_rule = true;
     std::string eval_file_p2{}; // empty â†’ use embedded
+    search::SearchEvalKind active_eval_kind = search::SearchEvalKind::P2;
     std::string syzygy_path{};
     std::atomic<bool> stop_requested{false};
     std::atomic<bool> search_running{false};
@@ -856,11 +909,29 @@ struct UciSession {
     }
 
     [[nodiscard]] bool mnue_active() const noexcept {
-        return mnue::p2_loaded();
+        switch (active_eval_kind) {
+            case search::SearchEvalKind::P2:
+                return mnue::p2_loaded();
+            case search::SearchEvalKind::X2K16:
+                return mnue::x2k16::loaded();
+            case search::SearchEvalKind::None:
+                return false;
+        }
+        return false;
     }
 
     [[nodiscard]] std::string mnue_name() const {
-        return mnue::p2_loaded() ? mnue::p2_path() : std::string{};
+        switch (active_eval_kind) {
+            case search::SearchEvalKind::P2:
+                return mnue::p2_loaded() ? mnue::p2_path() : std::string{};
+            case search::SearchEvalKind::X2K16:
+                return mnue::x2k16::loaded()
+                    ? mnue::x2k16::path()
+                    : std::string{};
+            case search::SearchEvalKind::None:
+                return {};
+        }
+        return {};
     }
 
     void ensure_attack_ready() {
@@ -976,15 +1047,45 @@ struct UciSession {
     [[nodiscard]] bool ensure_mnue_loaded(std::ostream* out) {
         // External file explicitly set by user â€” load from disk.
         if (!eval_file_p2.empty()) {
-            const std::string p2_resolved = resolve_file_path(eval_file_p2);
+            const std::string resolved = resolve_file_path(eval_file_p2);
 
-            if (mnue::p2_loaded() && mnue::p2_path() == p2_resolved)
+            if (looks_like_x2k16_file(resolved)) {
+                if (active_eval_kind == search::SearchEvalKind::X2K16
+                    && mnue::x2k16::loaded()
+                    && mnue::x2k16::path() == resolved) {
+                    return true;
+                }
+
+                active_eval_kind = search::SearchEvalKind::X2K16;
+                mnue::unload_p2();
+                if (!mnue::x2k16::load(resolved)) {
+                    if (out) {
+                        *out << "info string failed to load MNUE-X2-K16-pawn-Q8-A384: "
+                             << mnue::x2k16::last_error() << '\n';
+                    }
+                    return false;
+                }
+
+                if (out) {
+                    *out << "info string loaded MNUE-X2-K16-pawn-Q8-A384 "
+                         << mnue::x2k16::path() << '\n';
+                    *out << "info string MNUE-X2-K16-pawn-Q8-A384 backend: scalar-full-rebuild\n";
+                }
                 return true;
+            }
 
-            if (mnue::load_p2(p2_resolved)) {
+            if (active_eval_kind == search::SearchEvalKind::P2
+                && mnue::p2_loaded()
+                && mnue::p2_path() == resolved) {
+                return true;
+            }
+
+            active_eval_kind = search::SearchEvalKind::P2;
+            mnue::x2k16::unload();
+            if (mnue::load_p2(resolved)) {
                 if (out)
                     *out << "info string loaded " << mnue::p2_eval_name()
-                         << ' ' << p2_resolved << '\n';
+                         << ' ' << resolved << '\n';
                 return true;
             }
 
@@ -995,6 +1096,8 @@ struct UciSession {
         }
 
         // Default: compile-time embedded P2/P2Pro network.
+        active_eval_kind = search::SearchEvalKind::P2;
+        mnue::x2k16::unload();
         if (mnue::p2_loaded() && mnue::p2_path() == mnue::kEmbeddedP2Filename)
             return true;
 
@@ -1115,6 +1218,8 @@ struct UciSession {
             // "<embedded>" or empty â†’ revert to built-in network.
             if (value.empty() || value == "<embedded>") {
                 eval_file_p2.clear();
+                active_eval_kind = search::SearchEvalKind::P2;
+                mnue::x2k16::unload();
                 mnue::unload_p2();
                 memory::memory_clear_hash(mem);
                 if (!ensure_eval_loaded(&out))
@@ -1153,26 +1258,115 @@ struct UciSession {
             return;
         }
 
-        const int raw_stm = mnue::eval_p2(pos);
+        int raw_stm = 0;
+        std::string eval_name;
+        std::string eval_path;
+        if (active_eval_kind == search::SearchEvalKind::X2K16) {
+            raw_stm = mnue::x2k16::evaluate_reference(pos, mem);
+            eval_name = "x2-k16-pawn-q8-a384";
+            eval_path = mnue::x2k16::path();
+        } else {
+            raw_stm = mnue::eval_p2(pos);
+            eval_name = mnue::p2_short_name();
+            eval_path = mnue::p2_path();
+        }
         const int search_stm = mnue::search_score(raw_stm, pos);
         const int search_cp_stm = mnue::search_score_to_cp(search_stm, pos);
         const int winrate_stm = mnue::win_rate_model(raw_stm, pos);
+        const int raw_white = white_pov_score(pos, raw_stm);
+        const int search_white = white_pov_score(pos, search_stm);
+        const int search_cp_white = white_pov_score(pos, search_cp_stm);
+        const int winrate_white = white_pov_winrate(pos, winrate_stm);
+        const mnue::WdlTriplet wdl_stm =
+            mnue::search_score_to_wdl(search_stm, pos);
         const mnue::WdlTriplet wdl_white =
-            white_pov_wdl(pos, mnue::search_score_to_wdl(search_stm, pos));
-        const char* p2_name = mnue::p2_short_name();
+            white_pov_wdl(pos, wdl_stm);
 
-        out << "info string eval " << p2_name << '\n';
-        out << "info string mnue " << p2_name << " path " << mnue::p2_path() << '\n';
-        out << "info string mnue " << p2_name << " material " << mnue::material_units(pos) << '\n';
-        out << "info string mnue " << p2_name << " raw " << white_pov_score(pos, raw_stm) << '\n';
-        out << "info string mnue " << p2_name << " search " << white_pov_score(pos, search_stm) << '\n';
-        out << "info string mnue " << p2_name << " searchcp " << white_pov_score(pos, search_cp_stm) << '\n';
-        out << "info string mnue " << p2_name << " winrate "
-            << white_pov_winrate(pos, winrate_stm) << '\n';
-        out << "info string mnue " << p2_name << " wdl "
+        out << "info string eval " << eval_name << '\n';
+        out << "info string mnue " << eval_name << " path " << eval_path << '\n';
+        if (active_eval_kind == search::SearchEvalKind::X2K16)
+            out << "info string mnue " << eval_name << " backend scalar-full-rebuild\n";
+        out << "info string mnue " << eval_name << " material " << mnue::material_units(pos) << '\n';
+        out << "info string mnue " << eval_name << " raw " << raw_white << '\n';
+        out << "info string mnue " << eval_name << " search " << search_white << '\n';
+        out << "info string mnue " << eval_name << " searchcp " << search_cp_white << '\n';
+        out << "info string mnue " << eval_name << " winrate "
+            << winrate_white << '\n';
+        out << "info string mnue " << eval_name << " wdl "
             << wdl_white.win << ' '
             << wdl_white.draw << ' '
             << wdl_white.loss << '\n';
+        out << "info string mnue " << eval_name << " raw_stm " << raw_stm << '\n';
+        out << "info string mnue " << eval_name << " raw_white " << raw_white << '\n';
+        out << "info string mnue " << eval_name << " search_stm " << search_stm << '\n';
+        out << "info string mnue " << eval_name << " search_white " << search_white << '\n';
+        out << "info string mnue " << eval_name << " searchcp_stm " << search_cp_stm << '\n';
+        out << "info string mnue " << eval_name << " searchcp_white " << search_cp_white << '\n';
+        out << "info string mnue " << eval_name << " winrate_stm " << winrate_stm << '\n';
+        out << "info string mnue " << eval_name << " winrate_white " << winrate_white << '\n';
+        out << "info string mnue " << eval_name << " white_expectation " << winrate_white << '\n';
+        out << "info string mnue " << eval_name << " wdl_stm "
+            << wdl_stm.win << ' '
+            << wdl_stm.draw << ' '
+            << wdl_stm.loss << '\n';
+        out << "info string mnue " << eval_name << " wdl_white "
+            << wdl_white.win << ' '
+            << wdl_white.draw << ' '
+            << wdl_white.loss << '\n';
+    }
+
+    void handle_x2k16_load(std::string_view line, std::ostream& out) {
+        const std::string_view argument =
+            trim_ascii(command_arguments(line, "mnuex2k16load"));
+        if (argument.empty()) {
+            out << "info string usage: mnuex2k16load <path>\n";
+            return;
+        }
+
+        const std::string requested{argument};
+        const std::string resolved = resolve_file_path(requested);
+        std::error_code ec;
+        if (!std::filesystem::exists(resolved, ec) || ec) {
+            out << "info string MNUE-X2-K16-pawn-Q8-A384 file not found: "
+                << requested << '\n';
+            return;
+        }
+
+        if (!mnue::x2k16::load(resolved)) {
+            out << "info string failed to load MNUE-X2-K16-pawn-Q8-A384: "
+                << mnue::x2k16::last_error() << '\n';
+            return;
+        }
+
+        out << "info string loaded MNUE-X2-K16-pawn-Q8-A384 "
+            << mnue::x2k16::path() << '\n';
+        out << "info string MNUE-X2-K16-pawn-Q8-A384 backend: scalar-full-rebuild\n";
+    }
+
+    void handle_x2k16_info(std::ostream& out) {
+        mnue::x2k16::debug_dump_network(out);
+    }
+
+    void handle_x2k16_eval(std::ostream& out) {
+        if (!mnue::x2k16::loaded()) {
+            out << "info string MNUE-X2-K16-pawn-Q8-A384 unavailable: "
+                << mnue::x2k16::last_error() << '\n';
+            return;
+        }
+
+        const int raw_stm = mnue::x2k16::evaluate_reference(pos, mem);
+        out << "info string MNUE-X2-K16-pawn-Q8-A384 eval stm "
+            << raw_stm << '\n';
+        out << "info string MNUE-X2-K16-pawn-Q8-A384 eval white "
+            << white_pov_score(pos, raw_stm) << '\n';
+    }
+
+    void handle_x2k16_dump(std::ostream& out) {
+        mnue::x2k16::debug_dump_features(pos, out);
+    }
+
+    void handle_x2k16_debug(std::ostream& out) {
+        mnue::x2k16::debug_dump_evaluation(pos, mem, out);
     }
 
 
@@ -1191,7 +1385,8 @@ struct UciSession {
                 DEFAULT_BENCH_DEPTH,
                 DEFAULT_UCI_HASH_MB,
                 static_cast<std::size_t>(threads),
-                out
+                out,
+                active_eval_kind
             ))
             out << "info string bench failed\n";
     }
@@ -1253,17 +1448,34 @@ struct UciSession {
         }
 
         std::ostringstream desc;
-        desc << "info string MNUE evaluation using "
-            << mnue_name()
-            << " (" << mnue::p2_arch_name()
-            << ", " << std::fixed << std::setprecision(1)
-            << (static_cast<double>(mnue::p2_file_bytes()) / (1024.0 * 1024.0))
-            << " MiB, (1,"
-            << mnue::p2_output_buckets() << ','
-            << mnue::p2_input_buckets() << ','
-            << mnue::p2_hidden_size() << ','
-            << mnue::p2_input_size() << "), "
-            << mnue::eval_simd_name() << ")\n";
+        if (active_eval_kind == search::SearchEvalKind::X2K16) {
+            desc << "info string MNUE evaluation using "
+                << mnue_name()
+                << " (X2-K16-pawn-Q8-A384, " << std::fixed << std::setprecision(1)
+                << (static_cast<double>(mnue::x2k16::network_bytes()) / (1024.0 * 1024.0))
+                << " MiB, ("
+                << mnue::x2k16::Layout::OutputBuckets << ','
+                << mnue::x2k16::Layout::InputBuckets << ','
+                << mnue::x2k16::Layout::PieceHiddenSize << '/'
+                << mnue::x2k16::Layout::AttackHiddenSize << '/'
+                << mnue::x2k16::Layout::PawnPairHiddenSize << ','
+                << mnue::x2k16::Layout::PieceInputSize << '+'
+                << mnue::x2k16::Layout::AttackInputSize << '+'
+                << mnue::x2k16::Layout::PawnPairInputSize
+                << "), scalar-full-rebuild)\n";
+        } else {
+            desc << "info string MNUE evaluation using "
+                << mnue_name()
+                << " (" << mnue::p2_arch_name()
+                << ", " << std::fixed << std::setprecision(1)
+                << (static_cast<double>(mnue::p2_file_bytes()) / (1024.0 * 1024.0))
+                << " MiB, (1,"
+                << mnue::p2_output_buckets() << ','
+                << mnue::p2_input_buckets() << ','
+                << mnue::p2_hidden_size() << ','
+                << mnue::p2_input_size() << "), "
+                << mnue::eval_simd_name() << ")\n";
+        }
         std::cout << desc.str();
 
         limits.contempt = contempt;
@@ -1277,6 +1489,7 @@ struct UciSession {
         limits.thread_count = threads;
         limits.thread_id = 0;
         limits.report_info = true;
+        limits.eval_kind = active_eval_kind;
         limits.recover_ponder_pv = enable_ponder || limits.ponder;
         limits.syzygy_probe_depth = syzygy_probe_depth;
         limits.syzygy_probe_limit = syzygy_probe_limit;
@@ -1394,6 +1607,31 @@ struct UciSession {
             return true;
         }
 
+        if (command_starts_with(line, "mnuex2k16load")) {
+            handle_x2k16_load(line, out);
+            return true;
+        }
+
+        if (line == "mnuex2k16info") {
+            handle_x2k16_info(out);
+            return true;
+        }
+
+        if (line == "mnuex2k16eval") {
+            handle_x2k16_eval(out);
+            return true;
+        }
+
+        if (line == "mnuex2k16dump") {
+            handle_x2k16_dump(out);
+            return true;
+        }
+
+        if (line == "mnuex2k16debug") {
+            handle_x2k16_debug(out);
+            return true;
+        }
+
         if (line == "d") {
             display_position(pos, out);
             return true;
@@ -1496,6 +1734,7 @@ int run_bench(int argc, char** argv) {
             static_cast<std::size_t>(hash_mb),
             static_cast<std::size_t>(clamped_threads),
             std::cout,
+            search::SearchEvalKind::P2,
             true
         );
         memory::memory_free(mem);
