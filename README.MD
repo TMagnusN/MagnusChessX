@@ -1,288 +1,99 @@
-<p align="center">
+<div align="center">
+
   <img src="logo.png" alt="MagnusChessX Thinking logo" width="760">
-</p>
-
-<p align="center">
-  <img alt="C++20" src="https://img.shields.io/badge/C%2B%2B-20-blue?style=flat-square">
-  <img alt="UCI supported" src="https://img.shields.io/badge/UCI-supported-brightgreen?style=flat-square">
-  <img alt="MNUE embedded" src="https://img.shields.io/badge/MNUE-embedded-purple?style=flat-square">
-  <img alt="Syzygy supported" src="https://img.shields.io/badge/Syzygy-supported-informational?style=flat-square">
-  <img alt="License MIT" src="https://img.shields.io/badge/license-MIT-lightgrey?style=flat-square">
-</p>
-
-MagnusChessX Thinking is a C++20 UCI chess engine with a conventional
-alpha-beta search core, MNUE evaluation support, optional Syzygy tablebase
-probing, and command-line utilities for development checks.
-
-## Engine Architecture
 
-- Bitboard-based board representation.
-- Incremental position state for hash keys, king squares, evaluation state,
-  and repetition history.
-- Core board implementation in `src/board/Attack.*`,
-  `src/board/MoveGen.*`, and `src/board/Position.*`.
-- Clustered transposition table with probe, save, prefetch, bound-aware
-  storage, age tracking, and sampled `hashfull` reporting.
-- UCI front end in `src/Uci.cpp`, with command parsing, option handling,
-  asynchronous search management, and command-line utility dispatch.
+  [![C++20][cpp-badge]][repo-link]
+  [![UCI][uci-badge]][repo-link]
+  [![MNUE][mnue-badge]][mnue-link]
+  [![Syzygy][syzygy-badge]][fathom-link]
+  [![License][license-badge]][license-link]
+  [![Commits][commits-badge]][commits-link]
 
-## Search
+</div>
 
-- Iterative deepening with principal variation search.
-- Quiescence search.
-- Aspiration windows with widening fallback.
-- Transposition table cutoffs.
-- Internal iterative reductions.
-- Razoring, reverse futility pruning, null-move pruning, futility pruning,
-  late move pruning, history pruning, and late move reductions.
-- Staged move ordering:
-  `TT move -> good captures -> killer moves -> quiets -> bad captures`.
-- Quiet move ordering uses quiet history, countermove history, and
-  continuation history.
-- Capture ordering uses capture history, static exchange evaluation, SEE
-  bias, and MVV-LVA support.
+MagnusChessX is a [C++20][cpp20-link] [UCI][uci-protocol-link] chess engine by Theodore Magnus &Oslash;en Nidhar, developed in its current form since 2026-03-24.
 
-## Evaluation And MNUE
+Its current playable line, **Thinking**, is a low-strength reference engine with rudimentary positional understanding and limited practical competitiveness. That description is intentional: MagnusChessX is not presented as a mature tournament engine, but as a compact engine body for testing search behavior, evaluation design, and MNUE architecture changes without burying every experiment under release polish.
 
-- MNUE P2/P2Pro evaluation is the normal evaluation path.
-- The standard build embeds a default MNUE P2 network.
-- External P2/P2Pro-compatible network files can be selected through the
-  `MNUEfile` UCI option.
-- Headerless Bullet `quantised.bin` payloads are detected by exact raw size.
-- Search expects an available MNUE evaluator for normal play.
+MagnusChessX communicates over the [Universal Chess Interface][uci-protocol-link], which means you can talk to it in the terminal,
+or install it into a UCI-compatible graphical user interface, like [En Croissant](https://encroissant.org/download) or [Nibbler](https://github.com/rooklift/nibbler).
 
-The embedded network filename is configured in `src/Makefile`:
+The default network line is P2 MNUE, maintained separately in [MagnusMNUE](https://github.com/TMagnusN/MagnusMNUE). P2 is the normal evaluation path used by ordinary search. MagnusChessX also contains an experimental X2-K16-pawn MNUE path, used to test a less conventional layout with separated piece, attack-edge, and pawn-pair feature families. X2 is included because its structure is interesting, not because it is advertised as the current strength target.
 
-```text
-MNUE_EMBEDDED_FILE := mm-8adbe41d1.MNUE
-```
+MagnusChessX does not support Chess960. It probes [Syzygy tablebases][syzygy-link] up to 7 pieces through the vendored [Fathom](https://github.com/jdart1/Fathom) backend.
 
-The build expects this file under `src/build/` so it can be included through
-`src/mnue/MnueEmbedded.S`.
+PS: MagnusChessX's MNUE design learned a few architectural lessons from [Reckless](https://github.com/codedeliveryservice/Reckless).
 
-To convert a Bullet P2Pro `quantised.bin` checkpoint into a headered `.MNUE`
-file:
+## Building MagnusChessX
 
-```text
-python tools/sync_p2pro_mnue.py path/to/checkpoint/quantised.bin
-```
+If you only want to build and run the engine, you need a [`g++`][gcc-link] compiler with basic [C++20][cpp20-link] support and [GNU Make][make-link].
+For the trainer side of the project, make sure you have [Rust][rust-link] installed.
+In my opinion, if you only need the engine, you do not need to install Rust.
 
-This writes `src/build/<checkpoint-directory>.MNUE`. Add `--set-embedded`
-only when that P2Pro file should become the compile-time default.
+0. Make sure your compiler toolchain is installed. On Windows this normally means a [MinGW-w64][mingw-w64-link] / [MSYS2][msys2-link]-style `g++` and `mingw32-make`; on Linux, a recent `g++` and `make`.
+1. Clone this repository to your machine via `git clone git@github.com:TMagnusN/MagnusChessX.git`.
+2. Enter the source directory via `cd MagnusChessX/src`.
+3. Make sure the embedded network is available. All neural networks for MagnusChessX can be found on the page of the [TMagnusN/MagnusMNUE](https://github.com/TMagnusN/MagnusMNUE) repository. Since the neural network files are large, they are stored separately from the main repository.
 
-Select an external MNUE file through UCI:
+   Make sure your machine is connected to the network. The [Makefile](src/Makefile) will automatically download the default embedded network when it is missing. You can also download the network manually and place it in the `build` directory.
 
-```text
-setoption name MNUEfile value path/to/network.MNUE
-```
+4. Build MagnusChessX.
 
-Use the embedded network again with:
+   **On Windows**, it is recommended to run
+   ```text
+   > mingw32-make auto PGO=1 -j
+   ```
 
-```text
-setoption name MNUEfile value <embedded>
-```
+   **On Linux**, run the same build profile with
+   ```text
+   > make auto PGO=1 -j
+   ```
 
-## Syzygy Tablebases
+The `auto` profile automatically detects the CPU flags supported by your machine and optimizes the engine for them. [`PGO=1`][pgo-link] builds an instrumented engine, runs the configured training workload, and then rebuilds the optimized binary.
 
-MagnusChessX Thinking probes local Syzygy `.rtbw` and `.rtbz` files through
-the vendored MIT-licensed Fathom backend.
+## Evaluation Development History/Originality (HCE/MNUE)
 
-Supported behavior includes:
+- First evaluation was a hand-written evaluation function, used mainly to get the engine mechanics into shape: legal move generation, search stability, move ordering, time control behavior, and basic positional sanity.
+- The first neural evaluation line replaced HCE with a 768-wide NNUE, moving MagnusChessX away from manually stacked evaluation terms and toward a learned evaluator that could be trained, exported, loaded, and checked as part of the normal engine loop.
+- The current normal evaluation line is P2 MNUE. P2 is the default network family, the path expected by ordinary play, and the baseline against which later evaluation experiments have to justify themselves.
+- Subsequent experimental work added the X2-K16-pawn MNUE path. X2 is not just a wider P2 network: it separates piece, attack-edge, and pawn-pair feature families, which makes it useful for testing whether a richer feature layout can represent tactical and structural information more directly.
+- X2 is treated as experimental because an interesting architecture is not the same thing as proven strength. It exists in the engine so feature parity, loading, evaluation dispatch, and runtime behavior can be tested against the same search code as P2.
+- Regular engine testing is kept on `UHO_4060_v4.epd` and a private [OpenBench][openbench-link] instance, so changes are compared against a fixed opening set instead of whatever positions happen to be convenient that day.
 
-- Root DTZ ranking with WDL fallback.
-- Internal WDL cutoffs with configurable piece and depth limits.
-- 50-move-rule-aware root scores.
-- UCI `tbhits` reporting.
+All neural-network architecture work currently used in MagnusChessX is designed for MagnusChessX and trained with [bullet](https://github.com/jw1912/bullet).
+Current training data is generated with [Stockfish tooling](https://github.com/official-stockfish/Stockfish/tree/tools), so the project does not claim original self-play-only training data.
 
-UCI setup example:
+## Thanks and Acknowledgements
 
-```text
-setoption name SyzygyPath value D:\tablebases
-setoption name SyzygyProbeLimit value 7
-setoption name SyzygyProbeDepth value 1
-setoption name Syzygy50MoveRule value true
-```
+[Fathom](https://github.com/jdart1/Fathom), used for Syzygy tablebase probing. MagnusChessX relies on it for practical endgame tablebase support instead of carrying its own tablebase probe implementation.
 
-## Build
+[bullet](https://github.com/jw1912/bullet), used for neural-network training. It provides the training side that makes the MNUE experiments more than just file formats and engine loaders.
 
-### Requirements
+[Stockfish tooling](https://github.com/official-stockfish/Stockfish/tree/tools), used for training data generation.
 
-- 64-bit x86-64 compiler target.
-- `g++` with C++20 support.
-- `make` on Linux, WSL, or MSYS2.
-- `mingw32-make` on Windows with MinGW.
+[Reckless](https://github.com/codedeliveryservice/Reckless), whose public architecture helped inform parts of the MNUE design. MagnusChessX does not copy Reckless code; the useful lessons are re-derived inside its own network format, feature encoders, and validation workflow.
 
-The default `auto` profile maps to `native64` and uses `-march=native`. For a
-portable x86-64 binary, build the `portable64` profile.
+MagnusChessX is distributed under the MIT License. See [LICENSE][license-link].
 
-### Windows
+[repo-link]: https://github.com/TMagnusN/MagnusChessX
+[mnue-link]: https://github.com/TMagnusN/MagnusMNUE
+[fathom-link]: https://github.com/jdart1/Fathom
+[commits-link]: https://github.com/TMagnusN/MagnusChessX/commits/main
+[license-link]: https://github.com/TMagnusN/MagnusChessX/blob/main/LICENSE
+[cpp20-link]: https://en.cppreference.com/w/cpp/20
+[uci-protocol-link]: https://www.shredderchess.com/chess-features/uci-universal-chess-interface.html
+[gcc-link]: https://gcc.gnu.org/
+[make-link]: https://www.gnu.org/software/make/
+[msys2-link]: https://www.msys2.org/
+[mingw-w64-link]: https://www.mingw-w64.org/
+[rust-link]: https://www.rust-lang.org/tools/install
+[syzygy-link]: https://syzygy-tables.info/
+[pgo-link]: https://gcc.gnu.org/onlinedocs/gcc/Optimize-Options.html#index-fprofile-generate
+[openbench-link]: https://github.com/AndyGrant/OpenBench
 
-```powershell
-cd src
-mingw32-make clean
-mingw32-make auto -j
-```
-
-Repository-relative output:
-
-```text
-src/build/MagnusChessXThinking.exe
-```
-
-### Linux, WSL, Or MSYS2
-
-```bash
-cd src
-make clean
-make auto -j
-```
-
-Repository-relative output:
-
-```text
-src/build/MagnusChessXThinking
-```
-
-### Build Profiles
-
-```bash
-make auto -j
-make portable64 -j
-make native64 -j
-make variants -j
-make detect
-```
-
-### PGO Build
-
-Set `PGO=1` to build an instrumented executable, run the configured training
-workload, and rebuild with profile-guided optimization:
-
-```bash
-cd src
-make auto PGO=1 -j
-```
-
-Windows uses the same variable:
-
-```powershell
-cd src
-mingw32-make auto PGO=1 -j
-```
-
-PGO output is written as:
-
-```text
-src/build/MagnusChessXThinking-<profile>-pgo[.exe]
-```
-
-The default PGO training command is `bench`. Override it with
-`PGO_BENCH_ARGS` if a different workload is required.
-
-## Running
-
-Start UCI mode with no arguments:
-
-```bash
-cd src
-./build/MagnusChessXThinking
-```
-
-Or explicitly:
-
-```bash
-cd src
-./build/MagnusChessXThinking uci
-```
-
-Windows:
-
-```powershell
-cd src
-.\build\MagnusChessXThinking.exe uci
-```
-
-Command-line utilities:
-
-```bash
-./build/MagnusChessXThinking bench 12 64 1
-./build/MagnusChessXThinking perft 5
-```
-
-## UCI Interface
-
-Standard commands:
-
-```text
-uci
-isready
-ucinewgame
-position
-go
-stop
-ponderhit
-quit
-setoption
-```
-
-Supported `go` controls:
-
-```text
-depth
-nodes
-movetime
-wtime
-btime
-winc
-binc
-movestogo
-ponder
-infinite
-searchmoves
-```
-
-Primary UCI options:
-
-| Option | Type | Default | Notes |
-|---|---|---:|---|
-| Hash | spin | 16 | Megabytes allocated to the transposition table. |
-| Threads | spin | 1 | Search thread count, maximum 512. |
-| MultiPV | spin | 1 | Multi-principal-variation output, maximum 256. |
-| Contempt | spin | 0 | Evaluation offset, range -10000 to 10000. |
-| Move Overhead | spin | 10 | Time-management overhead in milliseconds. |
-| Ponder | check | false | Enables pondering support. |
-| SyzygyPath | string | `<empty>` | Directory containing Syzygy files. |
-| SyzygyProbeDepth | spin | 1 | Minimum depth for tablebase probes, range 1 to 100. |
-| Syzygy50MoveRule | check | true | Applies 50-move-rule-aware tablebase scoring. |
-| SyzygyProbeLimit | spin | 7 | Maximum tablebase piece count, range 0 to 7. |
-| MNUEfile | string | `mm-8adbe41d1.MNUE` | External MNUE file path or `<embedded>`. |
-
-Utility commands:
-
-```text
-d
-eval
-bench
-perft <depth>
-```
-
-## Repository Layout
-
-```text
-src/                    Engine source
-src/board/              Board representation, attacks, and move generation
-src/mnue/               MNUE evaluator and embedded-network support
-src/syzygy/             Syzygy integration
-third_party/fathom/     Vendored Fathom tablebase probe
-tools/                  Development and network-preparation utilities
-docs/                   Development notes and reference documentation
-```
-
-## License And Credits
-
-MagnusChessX Thinking is distributed under the MIT License. See `LICENSE` for
-details.
-
-Syzygy probing uses the vendored Fathom tablebase backend under its MIT
-license. MNUE network preparation uses external Bullet-compatible training
-tooling.
+[cpp-badge]: https://img.shields.io/badge/C%2B%2B-20-blue?style=for-the-badge
+[uci-badge]: https://img.shields.io/badge/Protocol-UCI-brightgreen?style=for-the-badge
+[mnue-badge]: https://img.shields.io/badge/MNUE-P2%20%2B%20X2-purple?style=for-the-badge
+[syzygy-badge]: https://img.shields.io/badge/Syzygy-7--piece-informational?style=for-the-badge
+[license-badge]: https://img.shields.io/badge/License-MIT-success?style=for-the-badge
+[commits-badge]: https://img.shields.io/github/last-commit/TMagnusN/MagnusChessX/main?style=for-the-badge&label=last%20commit
