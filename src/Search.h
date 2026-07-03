@@ -218,6 +218,127 @@ enum class SearchEvalKind : std::uint8_t {
     X2K16
 };
 
+#ifndef MAGNUS_SEARCH_ENABLE_ASPIRATION
+#define MAGNUS_SEARCH_ENABLE_ASPIRATION 1
+#endif
+#ifndef MAGNUS_SEARCH_ENABLE_IIR
+#define MAGNUS_SEARCH_ENABLE_IIR 1
+#endif
+#ifndef MAGNUS_SEARCH_ENABLE_RAZORING
+#define MAGNUS_SEARCH_ENABLE_RAZORING 1
+#endif
+#ifndef MAGNUS_SEARCH_ENABLE_RFP
+#define MAGNUS_SEARCH_ENABLE_RFP 1
+#endif
+#ifndef MAGNUS_SEARCH_ENABLE_NMP
+#define MAGNUS_SEARCH_ENABLE_NMP 1
+#endif
+#ifndef MAGNUS_SEARCH_ENABLE_PROBCUT
+#define MAGNUS_SEARCH_ENABLE_PROBCUT 1
+#endif
+#ifndef MAGNUS_SEARCH_ENABLE_SMALL_PROBCUT
+#define MAGNUS_SEARCH_ENABLE_SMALL_PROBCUT 1
+#endif
+#ifndef MAGNUS_SEARCH_ENABLE_SEE_BAD_CAPTURE_GATE
+#define MAGNUS_SEARCH_ENABLE_SEE_BAD_CAPTURE_GATE 1
+#endif
+#ifndef MAGNUS_SEARCH_ENABLE_CAPTURE_FUTILITY
+#define MAGNUS_SEARCH_ENABLE_CAPTURE_FUTILITY 1
+#endif
+#ifndef MAGNUS_SEARCH_ENABLE_SEE_PRUNING
+#define MAGNUS_SEARCH_ENABLE_SEE_PRUNING 1
+#endif
+#ifndef MAGNUS_SEARCH_ENABLE_QUIET_FUTILITY
+#define MAGNUS_SEARCH_ENABLE_QUIET_FUTILITY 1
+#endif
+#ifndef MAGNUS_SEARCH_ENABLE_LMP
+#define MAGNUS_SEARCH_ENABLE_LMP 1
+#endif
+#ifndef MAGNUS_SEARCH_ENABLE_HISTORY_PRUNING
+#define MAGNUS_SEARCH_ENABLE_HISTORY_PRUNING 1
+#endif
+#ifndef MAGNUS_SEARCH_ENABLE_SINGULAR
+#define MAGNUS_SEARCH_ENABLE_SINGULAR 1
+#endif
+#ifndef MAGNUS_SEARCH_ENABLE_LMR
+#define MAGNUS_SEARCH_ENABLE_LMR 1
+#endif
+#ifndef MAGNUS_SEARCH_ENABLE_CORRECTION_HISTORY
+#define MAGNUS_SEARCH_ENABLE_CORRECTION_HISTORY 1
+#endif
+
+struct SearchComponents {
+    static constexpr bool aspiration = MAGNUS_SEARCH_ENABLE_ASPIRATION != 0;
+
+    /*
+    --------------------------------------------------
+    Results of HaveAspiration vs NoAspiration (10+0.1, 1t, 128MB, UHO_4060_v4.epd):
+    Elo: 61.29 +/- 31.79, nElo: 119.78 +/- 60.66
+    LOS: 99.99 %, DrawRatio: 55.56 %, PairsRatio: 4.60
+    Games: 126, Wins: 33, Losses: 11, Draws: 82, Points: 74.0 (58.73 %)
+    Ptnml(0-2): [0, 5, 35, 19, 4], WL/DD Ratio: 0.21
+    --------------------------------------------------
+    */
+
+    static constexpr bool iir = MAGNUS_SEARCH_ENABLE_IIR != 0;
+    /*
+    --------------------------------------------------
+    Results of HaveIIR vs NoIIR (10+0.1, 1t, 128MB, UHO_4060_v4.epd):
+    Elo: 28.08 +/- 22.27, nElo: 54.82 +/- 43.24
+    LOS: 99.35 %, DrawRatio: 52.42 %, PairsRatio: 1.95
+    Games: 248, Wins: 51, Losses: 31, Draws: 166, Points: 134.0 (54.03 %)
+    Ptnml(0-2): [1, 19, 65, 37, 2], WL/DD Ratio: 0.18
+    --------------------------------------------------
+    */
+
+    static constexpr bool razoring = MAGNUS_SEARCH_ENABLE_RAZORING != 0;
+    /*
+    --------------------------------------------------
+    Results of HaveRazoring vs NoRazoring (10+0.1, 1t, 128MB, UHO_4060_v4.epd):
+    Elo: 13.09 +/- 11.93, nElo: 25.30 +/- 23.01
+    LOS: 98.44 %, DrawRatio: 56.16 %, PairsRatio: 1.43
+    Games: 876, Wins: 157, Losses: 124, Draws: 595, Points: 454.5 (51.88 %)
+    Ptnml(0-2): [8, 71, 246, 106, 7], WL/DD Ratio: 0.18
+    --------------------------------------------------
+    */
+
+    static constexpr bool reverse_futility = MAGNUS_SEARCH_ENABLE_RFP != 0;
+    /*
+    --------------------------------------------------
+    Results of HaveReverse_futility vs NoReverse_futility (10+0.1, 1t, 128MB, UHO_4060_v4.epd):
+    Elo: 48.42 +/- 30.77, nElo: 95.46 +/- 59.72
+    LOS: 99.91 %, DrawRatio: 60.00 %, PairsRatio: 3.33
+    Games: 130, Wins: 29, Losses: 11, Draws: 90, Points: 74.0 (56.92 %)
+    Ptnml(0-2): [0, 6, 39, 16, 4], WL/DD Ratio: 0.15
+    --------------------------------------------------
+    */
+
+    static constexpr bool null_move = MAGNUS_SEARCH_ENABLE_NMP != 0;
+
+    static constexpr bool probcut = MAGNUS_SEARCH_ENABLE_PROBCUT != 0;
+    static constexpr bool small_probcut = MAGNUS_SEARCH_ENABLE_SMALL_PROBCUT != 0;
+
+    /*
+    --------------------------------------------------
+    Results of HaveProbCut vs NoProbCut (10+0.1, 1t, 128MB, UHO_4060_v4.epd):
+    Elo: 18.32 +/- 12.16, nElo: 33.74 +/- 22.33
+    LOS: 99.85 %, DrawRatio: 52.90 %, PairsRatio: 1.58
+    Games: 930, Wins: 169, Losses: 120, Draws: 641, Points: 489.5 (52.63 %)
+    Ptnml(0-2): [10, 75, 246, 124, 10], WL/DD Ratio: 0.11
+    --------------------------------------------------
+    */
+
+    static constexpr bool see_bad_capture_gate = MAGNUS_SEARCH_ENABLE_SEE_BAD_CAPTURE_GATE != 0;
+    static constexpr bool capture_futility = MAGNUS_SEARCH_ENABLE_CAPTURE_FUTILITY != 0;
+    static constexpr bool see_pruning = MAGNUS_SEARCH_ENABLE_SEE_PRUNING != 0;
+    static constexpr bool quiet_futility = MAGNUS_SEARCH_ENABLE_QUIET_FUTILITY != 0;
+    static constexpr bool late_move_pruning = MAGNUS_SEARCH_ENABLE_LMP != 0;
+    static constexpr bool history_pruning = MAGNUS_SEARCH_ENABLE_HISTORY_PRUNING != 0;
+    static constexpr bool singular_extension = MAGNUS_SEARCH_ENABLE_SINGULAR != 0;
+    static constexpr bool lmr = MAGNUS_SEARCH_ENABLE_LMR != 0;
+    static constexpr bool correction_history = MAGNUS_SEARCH_ENABLE_CORRECTION_HISTORY != 0;
+};
+
 /*
  * SearchLimits — 搜尋限制參數集合
  *
@@ -257,6 +378,7 @@ struct SearchLimits {
     bool msv_info = false;              // Emit MSV-SMP debug info strings
     int multipv = 1;                    // Number of root principal variations to report
     SearchEvalKind eval_kind = SearchEvalKind::P2; // Active MNUE evaluator selected by UCI
+    SearchComponents components{};      // Runtime search-component switches; defaults preserve normal search
 
     // --- 對局歷史（供重複局面檢測）---
     Key game_history_keys[MAX_GAME_HISTORY]{}; // 歷史局面的 Zobrist 鍵值

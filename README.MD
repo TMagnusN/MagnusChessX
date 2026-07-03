@@ -3,11 +3,11 @@
 </p>
 
 <p align="center">
-  <img alt="C++20" src="https://img.shields.io/badge/C%2B%2B-20-blue">
-  <img alt="UCI supported" src="https://img.shields.io/badge/UCI-supported-brightgreen">
-  <img alt="MNUE embedded" src="https://img.shields.io/badge/MNUE-embedded-purple">
-  <img alt="Syzygy supported" src="https://img.shields.io/badge/Syzygy-supported-informational">
-  <img alt="License MIT" src="https://img.shields.io/badge/license-MIT-lightgrey">
+  <img alt="C++20" src="https://img.shields.io/badge/C%2B%2B-20-blue?style=flat-square">
+  <img alt="UCI supported" src="https://img.shields.io/badge/UCI-supported-brightgreen?style=flat-square">
+  <img alt="MNUE embedded" src="https://img.shields.io/badge/MNUE-embedded-purple?style=flat-square">
+  <img alt="Syzygy supported" src="https://img.shields.io/badge/Syzygy-supported-informational?style=flat-square">
+  <img alt="License MIT" src="https://img.shields.io/badge/license-MIT-lightgrey?style=flat-square">
 </p>
 
 MagnusChessX Thinking is a C++20 UCI chess engine with a conventional

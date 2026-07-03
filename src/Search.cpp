@@ -2365,8 +2365,11 @@ struct Searcher {
             info.raw = evaluate_raw_position(pos);
         }
         info.base = base_search_eval_from_raw(info.raw, pos);
+        const int correction = limits.components.correction_history
+            ? correction_value(side, info.keys)
+            : 0;
         const int mixed_eval = std::clamp(
-            info.base + correction_value(side, info.keys),
+            info.base + correction,
             -VALUE_INF,
             VALUE_INF
         );
@@ -2826,7 +2829,8 @@ struct Searcher {
             : 0;
 
         int search_depth = depth;
-        if (!pv_node &&
+        if (limits.components.iir &&
+            !pv_node &&
             search_depth >= IIR_MIN_DEPTH &&
             move_is_none(tt_move) &&
             !exclusion_search) {
@@ -2888,9 +2892,10 @@ struct Searcher {
         // Hindsight depth adjustment: compensate for prior LMR under/over-reduction.
         const int prior_reduction_plies = ply > 0
             ? search_stack[ply - 1].reduction_fp / 1024 : 0;
-        if (prior_reduction_plies >= 3 && !opponent_worsening)
+        if (limits.components.lmr && prior_reduction_plies >= 3 && !opponent_worsening)
             search_depth++;
-        if (prior_reduction_plies >= 2 && search_depth >= 2
+        if (limits.components.lmr &&
+            prior_reduction_plies >= 2 && search_depth >= 2
             && ply > 0 && static_eval_valid[ply - 1]
             && static_eval + static_eval_stack[ply - 1] > 195)
             search_depth--;
@@ -2927,7 +2932,8 @@ struct Searcher {
 
         // RAZOR_MARGIN[...] is only accessed after depth <= 2 is confirmed
         // through short-circuit evaluation.
-        if (can_prune &&
+        if (limits.components.razoring &&
+            can_prune &&
             search_depth <= 2 &&
             razor_eval + RAZOR_MARGIN[search_depth] <= alpha) {
             const int score = qsearch(pos, alpha, beta, ply);
@@ -2935,7 +2941,8 @@ struct Searcher {
                 return score;
         }
 
-        if (can_prune &&
+        if (limits.components.reverse_futility &&
+            can_prune &&
             search_depth < 8 &&
             !is_mate_window(beta) &&
             static_eval - reverse_futility_margin(
@@ -2955,7 +2962,8 @@ struct Searcher {
 
         const bool nmp_disabled_here = nmp_disabled_for_ply(ply, nmp_min_ply);
 #if MAGNUS_SEARCH_OBS
-        if (allow_null &&
+        if (limits.components.null_move &&
+            allow_null &&
             !pv_node &&
             !checked &&
             search_depth >= 3 &&
@@ -2986,7 +2994,9 @@ struct Searcher {
         nmp_node.material_ok = has_null_move_pruning_material(pos, side);
         nmp_node.tt_bound = tt_bound;
 
-        const NmpDecision nmp = decide_null_move(nmp_node);
+        const NmpDecision nmp = limits.components.null_move
+            ? decide_null_move(nmp_node)
+            : NmpDecision{};
         if (nmp.eligible && !is_mate_window(beta) && !nmp_disabled_here) {
             // Null-move pruning tests whether simply passing still keeps the
             // position above beta. If so, the real position is likely also a cutoff.
@@ -3059,7 +3069,8 @@ struct Searcher {
         }
 
 #if MAGNUS_ENABLE_PROBCUT
-        if (can_prune &&
+        if (limits.components.probcut &&
+            can_prune &&
             !exclusion_search &&
             search_depth >= PROBCUT_MIN_DEPTH &&
             !is_mate_window(beta)) {
@@ -3134,7 +3145,8 @@ struct Searcher {
         {
             constexpr int SMALL_PROBCUT_MARGIN = 416;
             const int small_probcut_beta = beta + SMALL_PROBCUT_MARGIN;
-            if (!pv_node && probe.hit
+            if (limits.components.small_probcut &&
+                !pv_node && probe.hit
                 && tt_bound == memory::BOUND_LOWER
                 && probe.data.depth >= search_depth - 4
                 && probed_tt_score >= small_probcut_beta
@@ -3330,7 +3342,8 @@ struct Searcher {
             }
 
 #if MAGNUS_SEE_LATE_BAD_CAPTURE_GATE
-            if (!pv_node &&
+            if (limits.components.see_bad_capture_gate &&
+                !pv_node &&
                 !checked &&
                 simple_capture &&
                 search_depth >= SEE_LATE_BAD_CAPTURE_GATE_MIN_DEPTH &&
@@ -3362,7 +3375,8 @@ struct Searcher {
 
             // Capture futility pruning: even with the captured piece value,
             // the position cannot reach alpha at shallow LMR depth.
-            if (!pv_node &&
+            if (limits.components.capture_futility &&
+                !pv_node &&
                 !checked &&
                 simple_capture &&
                 !ensure_gives_check() &&
@@ -3379,7 +3393,8 @@ struct Searcher {
 
             // Bad capture pruning with dynamic SEE threshold:
             // capture history adjusts the threshold — good captures are harder to prune.
-            if (!pv_node &&
+            if (limits.components.see_pruning &&
+                !pv_node &&
                 !checked &&
                 simple_capture &&
                 move_index > 1) {
@@ -3412,7 +3427,8 @@ struct Searcher {
                     + history_tables.pawn_history_value_fast(pos, move)
                 : 0;
 
-            if (!pv_node &&
+            if (limits.components.quiet_futility &&
+                !pv_node &&
                 !checked &&
                 search_depth <= 4 &&
                 quiet_move &&
@@ -3422,7 +3438,8 @@ struct Searcher {
                 continue;
             }
 
-            if (!pv_node &&
+            if (limits.components.late_move_pruning &&
+                !pv_node &&
                 !checked &&
                 search_depth <= 7 &&
                 quiet_move &&
@@ -3434,7 +3451,8 @@ struct Searcher {
                 continue;
             }
 
-            if (!pv_node &&
+            if (limits.components.history_pruning &&
+                !pv_node &&
                 !checked &&
                 search_depth <= 6 &&
                 quiet_move &&
@@ -3466,6 +3484,7 @@ struct Searcher {
             std::size_t singular_bucket_index = 0;
 #if MAGNUS_ENABLE_SINGULAR_EXTENSION
             const bool singular_basic_ok =
+                limits.components.singular_extension &&
                 move == tt_move &&
                 ply > 0 &&
                 !checked &&
@@ -3656,7 +3675,9 @@ struct Searcher {
             lmr_move.see_value = move_see_value;
             lmr_move.see_bias_term = move_see_bias_term;
 
-            const LmrDecision lmr = decide_lmr(lmr_node, lmr_move);
+            const LmrDecision lmr = limits.components.lmr
+                ? decide_lmr(lmr_node, lmr_move)
+                : LmrDecision{};
 #if MAGNUS_LMR_OBS
             if (lmr_quiet_candidate || lmr_capture_candidate)
                 record_lmr_considered(lmr, quiet_move, simple_capture, pv_node);
@@ -3956,7 +3977,8 @@ struct Searcher {
             );
         }
 
-        if (!exclusion_search &&
+        if (limits.components.correction_history &&
+            !exclusion_search &&
             !checked &&
             !cutoff &&
             best_move != 0 &&
@@ -4116,7 +4138,8 @@ struct Searcher {
         if (best_score == -VALUE_INF)
             best_score = alpha;
 
-        if (!checked &&
+        if (limits.components.correction_history &&
+            !checked &&
             !is_mate_window(best_score) &&
             best_score > alpha0 &&
             best_score < beta) {
@@ -4241,7 +4264,8 @@ struct Searcher {
             best_score = selected.score;
         }
 
-        if (pv_idx == 0 &&
+        if (limits.components.correction_history &&
+            pv_idx == 0 &&
             !checked &&
             !is_mate_window(best_score) &&
             best_score > alpha0 &&
@@ -4581,8 +4605,7 @@ void reset_searcher_iteration(
     const SearchLimits& limits,
     int depth
 ) noexcept {
-    (void)limits;
-    return depth >= 2;
+    return limits.components.aspiration && depth >= 2;
 }
 
 } // namespace
