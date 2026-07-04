@@ -62,6 +62,7 @@ The `auto` profile automatically detects the CPU flags supported by your machine
 
 All neural-network architecture work currently used in MagnusChessX is designed for MagnusChessX and trained with [bullet](https://github.com/jw1912/bullet).
 Current training data is generated with [Stockfish tooling](https://github.com/official-stockfish/Stockfish/tree/tools), so the project does not claim original self-play-only training data.
+The current P2 trainer command and embedded-network sync workflow are documented in [docs/MNUE_P2_TRAINER.md](docs/MNUE_P2_TRAINER.md).
 
 ## Thanks and Acknowledgements
 

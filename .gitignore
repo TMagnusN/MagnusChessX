@@ -12,6 +12,7 @@
 .idea/
 .build/
 src/build/
+tools/mnue_p2_trainer/target/
 
 .DS_Store
 Thumbs.db

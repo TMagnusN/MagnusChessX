@@ -42,7 +42,7 @@ SOFTWARE.
 #include <utility>
 #include <vector>
 
-// Symbols provided by mnue/MnueEmbedded.S — the embedded MNUE P2/P2Pro blob in .rodata.
+// Symbols provided by mnue/MnueEmbedded.S — the embedded MNUE P2-family blob in .rodata.
 // Weak: resolve to nullptr when the object is not linked (e.g. non-GCC builds).
 extern "C" const char mnue_p2_embedded_data[] __attribute__((weak));
 extern "C" const char mnue_p2_embedded_end[]   __attribute__((weak));
@@ -114,6 +114,7 @@ struct FileHeader {
 static_assert(sizeof(FileHeader) == 40);
 
 Network<P2Layout> g_p2;
+Network<P2K32Layout> g_p2k32;
 Network<P2ProLayout> g_p2pro;
 Network<P4Layout> g_p4;
 std::string g_error;
@@ -122,6 +123,7 @@ std::atomic<u32> g_p2_generation{1};
 enum class P2ActiveKind : std::uint8_t {
     None,
     P2,
+    P2K32,
     P2Pro
 };
 
@@ -131,6 +133,7 @@ const std::string kEmptyPath;
 [[nodiscard]] const char* p2_kind_eval_name(P2ActiveKind kind) noexcept {
     switch (kind) {
         case P2ActiveKind::P2:    return "mnue-p2";
+        case P2ActiveKind::P2K32: return "mnue-p2-k32";
         case P2ActiveKind::P2Pro: return "mnue-p2pro";
         case P2ActiveKind::None:  return "mnue-p2";
     }
@@ -140,6 +143,7 @@ const std::string kEmptyPath;
 [[nodiscard]] const char* p2_kind_arch_name(P2ActiveKind kind) noexcept {
     switch (kind) {
         case P2ActiveKind::P2:    return "P2";
+        case P2ActiveKind::P2K32: return "P2-K32";
         case P2ActiveKind::P2Pro: return "P2Pro";
         case P2ActiveKind::None:  return "P2";
     }
@@ -149,6 +153,7 @@ const std::string kEmptyPath;
 [[nodiscard]] const char* p2_kind_short_name(P2ActiveKind kind) noexcept {
     switch (kind) {
         case P2ActiveKind::P2:    return "p2";
+        case P2ActiveKind::P2K32: return "p2-k32";
         case P2ActiveKind::P2Pro: return "p2pro";
         case P2ActiveKind::None:  return "p2";
     }
@@ -385,9 +390,10 @@ template<class Layout>
 }
 
 [[nodiscard]] inline int king_zone32(Square relative_king_sq) noexcept {
-    const int file_group = file_of(relative_king_sq);      // 0..7
-    const int rank_group = rank_of(relative_king_sq) / 2;  // 0..3
-    return rank_group * 8 + file_group;                   // 0..31
+    const int file = file_of(relative_king_sq);
+    const int file_group = std::min(file, 7 - file); // 0..3, horizontal mirror
+    const int rank = rank_of(relative_king_sq);      // 0..7
+    return rank * 4 + file_group;                    // 0..31
 }
 
 [[nodiscard]] inline int phase_bucket2(const Position& pos) noexcept {
@@ -485,19 +491,25 @@ template<class Layout>
 }
 
 template<class Layout>
+[[nodiscard]] inline int king_bucket(Square relative_king_sq) noexcept {
+    if constexpr (Layout::InputBuckets == 16) {
+        return king_zone16(relative_king_sq);
+    } else {
+        static_assert(Layout::InputBuckets == 32);
+        return king_zone32(relative_king_sq);
+    }
+}
+
+template<class Layout>
 [[nodiscard]] inline int input_bucket(const Position& pos, Color perspective) noexcept {
     const Square rel_ksq = relative_square(perspective, king_square_of(pos, perspective));
-    if constexpr (Layout::InputBuckets == 16) {
-        return king_zone16(rel_ksq);
-    } else {
-        return king_zone32(rel_ksq);
-    }
+    return king_bucket<Layout>(rel_ksq);
 }
 
 template<class Layout>
 [[nodiscard]] inline int output_bucket(const Position& pos, Color stm) noexcept {
     const Square rel_ksq = relative_square(stm, king_square_of(pos, stm));
-    return phase_bucket2(pos) * 16 + king_zone16(rel_ksq); // 0..31
+    return phase_bucket2(pos) * Layout::InputBuckets + king_bucket<Layout>(rel_ksq);
 }
 
 template<class Layout>
@@ -738,6 +750,7 @@ void apply_p2_diff(
 
 using P2MoveDiff = std::array<P2PerspectiveDiff, COLOR_NB>;
 
+template<class Layout>
 void append_p2_feature(
     P2MoveDiff& move_diff,
     const std::array<int, COLOR_NB>& buckets,
@@ -753,7 +766,7 @@ void append_p2_feature(
         if (diff.refresh)
             continue;
 
-        const int idx = feature_index<P2Layout>(
+        const int idx = feature_index<Layout>(
             static_cast<Color>(persp),
             buckets[static_cast<std::size_t>(persp)],
             pc,
@@ -772,14 +785,15 @@ void append_p2_feature(
     }
 }
 
+template<class Layout>
 [[nodiscard]] P2MoveDiff make_p2_move_diff(
     const Position& pos,
     Move move
 ) noexcept {
     P2MoveDiff move_diff{};
     const std::array<int, COLOR_NB> buckets{{
-        input_bucket<P2Layout>(pos, WHITE),
-        input_bucket<P2Layout>(pos, BLACK)
+        input_bucket<Layout>(pos, WHITE),
+        input_bucket<Layout>(pos, BLACK)
     }};
     const Square from = from_sq(move);
     const Square to = to_sq(move);
@@ -789,8 +803,8 @@ void append_p2_feature(
     const Color moving_color = color_of(moving);
     const PieceType moving_type = type_of(moving);
     if (moving_type == KING) {
-        const int from_bucket = king_zone16(relative_square(moving_color, from));
-        const int to_bucket = king_zone16(relative_square(moving_color, to));
+        const int from_bucket = king_bucket<Layout>(relative_square(moving_color, from));
+        const int to_bucket = king_bucket<Layout>(relative_square(moving_color, to));
         move_diff[static_cast<std::size_t>(moving_color)].refresh =
             from_bucket != to_bucket;
     }
@@ -801,7 +815,7 @@ void append_p2_feature(
                 static_cast<int>(to) + (moving_color == WHITE ? -8 : 8)
             )
             : to;
-        append_p2_feature(
+        append_p2_feature<Layout>(
             move_diff,
             buckets,
             piece_on(pos, captured_sq),
@@ -810,9 +824,9 @@ void append_p2_feature(
         );
     }
 
-    append_p2_feature(move_diff, buckets, moving, from, false);
+    append_p2_feature<Layout>(move_diff, buckets, moving, from, false);
     if (move_is_promotion(move)) {
-        append_p2_feature(
+        append_p2_feature<Layout>(
             move_diff,
             buckets,
             make_piece(moving_color, promo_piece(move)),
@@ -820,7 +834,7 @@ void append_p2_feature(
             true
         );
     } else {
-        append_p2_feature(move_diff, buckets, moving, to, true);
+        append_p2_feature<Layout>(move_diff, buckets, moving, to, true);
     }
 
     if (move_is_castle(move)) {
@@ -832,8 +846,8 @@ void append_p2_feature(
             ? static_cast<Square>(king_side ? 5 : 3)
             : static_cast<Square>(king_side ? 61 : 59);
         const Piece rook = make_piece(moving_color, ROOK);
-        append_p2_feature(move_diff, buckets, rook, rook_from, false);
-        append_p2_feature(move_diff, buckets, rook, rook_to, true);
+        append_p2_feature<Layout>(move_diff, buckets, rook, rook_from, false);
+        append_p2_feature<Layout>(move_diff, buckets, rook, rook_to, true);
     }
 
     return move_diff;
@@ -1540,7 +1554,7 @@ struct P2StackStateSet {
             return;
 
         State& next = states[state_count++];
-        next.diff = make_p2_move_diff(pos, move);
+        next.diff = make_p2_move_diff<Layout>(pos, move);
         next.computed_mask = 0;
     }
 
@@ -1628,12 +1642,19 @@ struct P2StackStateSet {
 
 struct P2AccumulatorStack::Impl {
     std::unique_ptr<P2StackStateSet<P2Layout>> p2;
+    std::unique_ptr<P2StackStateSet<P2K32Layout>> p2k32;
     std::unique_ptr<P2StackStateSet<P2ProLayout>> p2pro;
 
     [[nodiscard]] P2StackStateSet<P2Layout>& p2_state() {
         if (!p2)
             p2 = std::make_unique<P2StackStateSet<P2Layout>>();
         return *p2;
+    }
+
+    [[nodiscard]] P2StackStateSet<P2K32Layout>& p2k32_state() {
+        if (!p2k32)
+            p2k32 = std::make_unique<P2StackStateSet<P2K32Layout>>();
+        return *p2k32;
     }
 
     [[nodiscard]] P2StackStateSet<P2ProLayout>& p2pro_state() {
@@ -1652,12 +1673,17 @@ struct P2AccumulatorStack::Impl {
             case P2ActiveKind::P2:
                 p2_state().reset(current);
                 break;
+            case P2ActiveKind::P2K32:
+                p2k32_state().reset(current);
+                break;
             case P2ActiveKind::P2Pro:
                 p2pro_state().reset(current);
                 break;
             case P2ActiveKind::None:
                 if (p2)
                     p2->reset(current);
+                if (p2k32)
+                    p2k32->reset(current);
                 if (p2pro)
                     p2pro->reset(current);
                 break;
@@ -1669,6 +1695,9 @@ struct P2AccumulatorStack::Impl {
         switch (g_p2_active) {
             case P2ActiveKind::P2:
                 p2_state().push(pos, move, current);
+                break;
+            case P2ActiveKind::P2K32:
+                p2k32_state().push(pos, move, current);
                 break;
             case P2ActiveKind::P2Pro:
                 p2pro_state().push(pos, move, current);
@@ -1684,6 +1713,10 @@ struct P2AccumulatorStack::Impl {
                 if (p2)
                     p2->pop();
                 break;
+            case P2ActiveKind::P2K32:
+                if (p2k32)
+                    p2k32->pop();
+                break;
             case P2ActiveKind::P2Pro:
                 if (p2pro)
                     p2pro->pop();
@@ -1697,6 +1730,8 @@ struct P2AccumulatorStack::Impl {
         switch (g_p2_active) {
             case P2ActiveKind::P2:
                 return p2 ? p2->state_count : 1;
+            case P2ActiveKind::P2K32:
+                return p2k32 ? p2k32->state_count : 1;
             case P2ActiveKind::P2Pro:
                 return p2pro ? p2pro->state_count : 1;
             case P2ActiveKind::None:
@@ -1713,6 +1748,18 @@ struct P2AccumulatorStack::Impl {
             pos,
             perspective,
             g_p2,
+            current_generation()
+        );
+    }
+
+    [[nodiscard]] const Accumulator<P2K32Layout>& ensure_p2k32(
+        const Position& pos,
+        Color perspective
+    ) noexcept {
+        return p2k32_state().ensure(
+            pos,
+            perspective,
+            g_p2k32,
             current_generation()
         );
     }
@@ -1759,6 +1806,7 @@ bool load_p2(const std::string& path) {
     Network<P2Layout> p2_candidate{};
     if (load_network(p2_candidate, path)) {
         g_p2 = std::move(p2_candidate);
+        clear_network(g_p2k32);
         clear_network(g_p2pro);
         g_p2_active = P2ActiveKind::P2;
         (void)next_p2_generation();
@@ -1766,9 +1814,21 @@ bool load_p2(const std::string& path) {
     }
 
     const std::string p2_error = g_error;
+    Network<P2K32Layout> p2k32_candidate{};
+    if (load_network(p2k32_candidate, path)) {
+        clear_network(g_p2);
+        g_p2k32 = std::move(p2k32_candidate);
+        clear_network(g_p2pro);
+        g_p2_active = P2ActiveKind::P2K32;
+        (void)next_p2_generation();
+        return true;
+    }
+
+    const std::string p2k32_error = g_error;
     Network<P2ProLayout> p2pro_candidate{};
     if (load_network(p2pro_candidate, path)) {
         clear_network(g_p2);
+        clear_network(g_p2k32);
         g_p2pro = std::move(p2pro_candidate);
         g_p2_active = P2ActiveKind::P2Pro;
         (void)next_p2_generation();
@@ -1777,8 +1837,10 @@ bool load_p2(const std::string& path) {
 
     g_p2_active = P2ActiveKind::None;
     clear_network(g_p2);
+    clear_network(g_p2k32);
     clear_network(g_p2pro);
-    g_error = "failed to load MNUE P2/P2Pro: P2: " + p2_error
+    g_error = "failed to load MNUE P2/P2-K32/P2Pro: P2: " + p2_error
+        + "; P2-K32: " + p2k32_error
         + "; P2Pro: " + g_error;
     return false;
 }
@@ -1817,11 +1879,11 @@ template<class Layout>
     return true;
 }
 
-// Load the compile-time embedded P2/P2Pro network from .rodata.
+// Load the compile-time embedded P2/P2-K32/P2Pro network from .rodata.
 // Uses a zero-copy memory streambuf to avoid an extra 20-28 MiB string allocation.
 bool load_p2_embedded() {
     if (!mnue_p2_embedded_data || !mnue_p2_embedded_end) {
-        g_error = "embedded MNUE P2/P2Pro not linked (missing MnueEmbedded.o)";
+        g_error = "embedded MNUE P2/P2-K32/P2Pro not linked (missing MnueEmbedded.o)";
         return false;
     }
 
@@ -1843,6 +1905,7 @@ bool load_p2_embedded() {
             size,
             kEmbeddedP2Filename
         )) {
+        clear_network(g_p2k32);
         clear_network(g_p2pro);
         g_p2_active = P2ActiveKind::P2;
         (void)next_p2_generation();
@@ -1851,12 +1914,27 @@ bool load_p2_embedded() {
 
     const std::string p2_error = g_error;
     if (load_p2_family_from_memory(
+            g_p2k32,
+            mnue_p2_embedded_data,
+            size,
+            kEmbeddedP2Filename
+        )) {
+        clear_network(g_p2);
+        clear_network(g_p2pro);
+        g_p2_active = P2ActiveKind::P2K32;
+        (void)next_p2_generation();
+        return true;
+    }
+
+    const std::string p2k32_error = g_error;
+    if (load_p2_family_from_memory(
             g_p2pro,
             mnue_p2_embedded_data,
             size,
             kEmbeddedP2Filename
         )) {
         clear_network(g_p2);
+        clear_network(g_p2k32);
         g_p2_active = P2ActiveKind::P2Pro;
         (void)next_p2_generation();
         return true;
@@ -1864,8 +1942,10 @@ bool load_p2_embedded() {
 
     g_p2_active = P2ActiveKind::None;
     clear_network(g_p2);
+    clear_network(g_p2k32);
     clear_network(g_p2pro);
-    g_error = "failed to load embedded MNUE P2/P2Pro: P2: " + p2_error
+    g_error = "failed to load embedded MNUE P2/P2-K32/P2Pro: P2: " + p2_error
+        + "; P2-K32: " + p2k32_error
         + "; P2Pro: " + g_error;
     return false;
 }
@@ -1882,6 +1962,7 @@ bool p2_embedded_available() noexcept {
 
 void unload_p2() noexcept {
     clear_network(g_p2);
+    clear_network(g_p2k32);
     clear_network(g_p2pro);
     g_p2_active = P2ActiveKind::None;
     (void)next_p2_generation();
@@ -1899,6 +1980,7 @@ void unload_all() noexcept {
 bool p2_loaded() noexcept {
     switch (g_p2_active) {
         case P2ActiveKind::P2:    return g_p2.loaded && g_p2.valid();
+        case P2ActiveKind::P2K32: return g_p2k32.loaded && g_p2k32.valid();
         case P2ActiveKind::P2Pro: return g_p2pro.loaded && g_p2pro.valid();
         case P2ActiveKind::None:  return false;
     }
@@ -1912,6 +1994,7 @@ bool p4_loaded() noexcept {
 const std::string& p2_path() noexcept {
     switch (g_p2_active) {
         case P2ActiveKind::P2:    return g_p2.path;
+        case P2ActiveKind::P2K32: return g_p2k32.path;
         case P2ActiveKind::P2Pro: return g_p2pro.path;
         case P2ActiveKind::None:  return kEmptyPath;
     }
@@ -1951,6 +2034,7 @@ const char* p2_short_name() noexcept {
 int p2_input_size() noexcept {
     switch (g_p2_active) {
         case P2ActiveKind::P2:    return P2Layout::InputSize;
+        case P2ActiveKind::P2K32: return P2K32Layout::InputSize;
         case P2ActiveKind::P2Pro: return P2ProLayout::InputSize;
         case P2ActiveKind::None:  return 0;
     }
@@ -1960,6 +2044,7 @@ int p2_input_size() noexcept {
 int p2_hidden_size() noexcept {
     switch (g_p2_active) {
         case P2ActiveKind::P2:    return P2Layout::HiddenSize;
+        case P2ActiveKind::P2K32: return P2K32Layout::HiddenSize;
         case P2ActiveKind::P2Pro: return P2ProLayout::HiddenSize;
         case P2ActiveKind::None:  return 0;
     }
@@ -1969,6 +2054,7 @@ int p2_hidden_size() noexcept {
 int p2_input_buckets() noexcept {
     switch (g_p2_active) {
         case P2ActiveKind::P2:    return P2Layout::InputBuckets;
+        case P2ActiveKind::P2K32: return P2K32Layout::InputBuckets;
         case P2ActiveKind::P2Pro: return P2ProLayout::InputBuckets;
         case P2ActiveKind::None:  return 0;
     }
@@ -1978,6 +2064,7 @@ int p2_input_buckets() noexcept {
 int p2_output_buckets() noexcept {
     switch (g_p2_active) {
         case P2ActiveKind::P2:    return P2Layout::OutputBuckets;
+        case P2ActiveKind::P2K32: return P2K32Layout::OutputBuckets;
         case P2ActiveKind::P2Pro: return P2ProLayout::OutputBuckets;
         case P2ActiveKind::None:  return 0;
     }
@@ -1988,6 +2075,8 @@ std::size_t p2_file_bytes() noexcept {
     switch (g_p2_active) {
         case P2ActiveKind::P2:
             return static_cast<std::size_t>(file_bytes<P2Layout>());
+        case P2ActiveKind::P2K32:
+            return static_cast<std::size_t>(file_bytes<P2K32Layout>());
         case P2ActiveKind::P2Pro:
             return static_cast<std::size_t>(file_bytes<P2ProLayout>());
         case P2ActiveKind::None:
@@ -2026,6 +2115,17 @@ int eval_p2(const Position& pos, P2AccumulatorStack& stack) noexcept {
             const auto& nstm_acc = stm == WHITE ? black_acc : white_acc;
             return forward<P2Layout>(pos, g_p2, stm_acc, nstm_acc);
         }
+        case P2ActiveKind::P2K32: {
+            if (!g_p2k32.loaded || !g_p2k32.valid())
+                return 0;
+
+            const auto& white_acc = stack.impl_->ensure_p2k32(pos, WHITE);
+            const auto& black_acc = stack.impl_->ensure_p2k32(pos, BLACK);
+            const Color stm = static_cast<Color>(pos.side_to_move);
+            const auto& stm_acc = stm == WHITE ? white_acc : black_acc;
+            const auto& nstm_acc = stm == WHITE ? black_acc : white_acc;
+            return forward<P2K32Layout>(pos, g_p2k32, stm_acc, nstm_acc);
+        }
         case P2ActiveKind::P2Pro: {
             if (!g_p2pro.loaded || !g_p2pro.valid())
                 return 0;
@@ -2058,6 +2158,19 @@ int debug_eval_p2_reference(const Position& pos) noexcept {
             const auto& nstm_acc = stm == WHITE ? black_acc : white_acc;
             return forward_reference<P2Layout>(pos, g_p2, stm_acc, nstm_acc);
         }
+        case P2ActiveKind::P2K32: {
+            if (!g_p2k32.loaded || !g_p2k32.valid())
+                return 0;
+
+            Accumulator<P2K32Layout> white_acc{};
+            Accumulator<P2K32Layout> black_acc{};
+            rebuild_accumulator<P2K32Layout>(pos, WHITE, white_acc, g_p2k32);
+            rebuild_accumulator<P2K32Layout>(pos, BLACK, black_acc, g_p2k32);
+            const Color stm = static_cast<Color>(pos.side_to_move);
+            const auto& stm_acc = stm == WHITE ? white_acc : black_acc;
+            const auto& nstm_acc = stm == WHITE ? black_acc : white_acc;
+            return forward_reference<P2K32Layout>(pos, g_p2k32, stm_acc, nstm_acc);
+        }
         case P2ActiveKind::P2Pro: {
             if (!g_p2pro.loaded || !g_p2pro.valid())
                 return 0;
@@ -2082,6 +2195,8 @@ bool p2_i32_forward_enabled() noexcept {
     switch (g_p2_active) {
         case P2ActiveKind::P2:
             return g_p2.loaded && g_p2.valid() && g_p2.forward_i32_safe;
+        case P2ActiveKind::P2K32:
+            return g_p2k32.loaded && g_p2k32.valid() && g_p2k32.forward_i32_safe;
         case P2ActiveKind::P2Pro:
             return g_p2pro.loaded && g_p2pro.valid() && g_p2pro.forward_i32_safe;
         case P2ActiveKind::None:
@@ -2097,6 +2212,8 @@ int p2_w1_max_abs() noexcept {
     switch (g_p2_active) {
         case P2ActiveKind::P2:
             return g_p2.loaded && g_p2.valid() ? g_p2.w1_max_abs : 0;
+        case P2ActiveKind::P2K32:
+            return g_p2k32.loaded && g_p2k32.valid() ? g_p2k32.w1_max_abs : 0;
         case P2ActiveKind::P2Pro:
             return g_p2pro.loaded && g_p2pro.valid() ? g_p2pro.w1_max_abs : 0;
         case P2ActiveKind::None:
@@ -2176,6 +2293,9 @@ void debug_dump_p2_features(const Position& pos, std::ostream& out) {
     switch (g_p2_active) {
         case P2ActiveKind::P2:
             debug_dump_p2_features_impl<P2Layout>(pos, g_p2, "p2", out);
+            return;
+        case P2ActiveKind::P2K32:
+            debug_dump_p2_features_impl<P2K32Layout>(pos, g_p2k32, "p2-k32", out);
             return;
         case P2ActiveKind::P2Pro:
             debug_dump_p2_features_impl<P2ProLayout>(pos, g_p2pro, "p2pro", out);
@@ -2269,6 +2389,14 @@ bool debug_check_p2_incremental(
                 stack.impl_->p2_state(),
                 g_p2,
                 "p2",
+                out
+            );
+        case P2ActiveKind::P2K32:
+            return debug_check_p2_incremental_impl<P2K32Layout>(
+                pos,
+                stack.impl_->p2k32_state(),
+                g_p2k32,
+                "p2-k32",
                 out
             );
         case P2ActiveKind::P2Pro:

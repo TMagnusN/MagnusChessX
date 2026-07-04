@@ -28,9 +28,9 @@ ifneq ($(PGO),0)
   endif
 endif
 
-# Embedded P2/P2Pro network - single source of truth for the filename.
+# Embedded P2-family network - single source of truth for the filename.
 # Changing this updates MnueEmbedded.S, Mnue.cpp, and Uci.cpp automatically.
-MNUE_EMBEDDED_FILE := mm-8adbe41d1.MNUE
+MNUE_EMBEDDED_FILE := mm-4ac81907e.MNUE
 
 # Fresh-clone helper: keep the large MNUE out of git.
 # Linux server uses the local file first; other workers fall back to GitHub raw.

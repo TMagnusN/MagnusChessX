@@ -62,6 +62,20 @@ struct P2Layout {
     static constexpr int ArchId = 2;
 };
 
+// MNUE-P2-K32: P2 with finer king buckets.
+//   1 x 64 x 32 x 1024 x 20480
+//   output_buckets x input_buckets x hidden x input_features.
+struct P2K32Layout {
+    static constexpr int InputBuckets = 32;
+    static constexpr int OutputBuckets = 64;
+    static constexpr int RelativeColors = 2;
+    static constexpr int NonKingPieceTypes = 5;
+    static constexpr int Squares = 64;
+    static constexpr int InputSize = InputBuckets * RelativeColors * NonKingPieceTypes * Squares;
+    static constexpr int HiddenSize = 1024;
+    static constexpr int ArchId = 2;
+};
+
 // MNUE-P2Pro: wider P2-compatible fast filter net.
 //   1 x 32 x 16 x 1408 x 10240
 //   output_buckets x input_buckets x hidden x input_features.
@@ -91,13 +105,14 @@ struct P4Layout {
 };
 
 static_assert(P2Layout::InputSize == 10240);
+static_assert(P2K32Layout::InputSize == 20480);
 static_assert(P2ProLayout::InputSize == 10240);
 static_assert(P4Layout::InputSize == 20480);
 
-// Embedded P2/P2Pro network filename - driven by Makefile -D, with a fallback
+// Embedded P2/P2-K32/P2Pro network filename - driven by Makefile -D, with a fallback
 // for builds that do not go through the Makefile.
 #ifndef MNUE_EMBEDDED_FILENAME
-#define MNUE_EMBEDDED_FILENAME "mm-8adbe41d1.MNUE"
+#define MNUE_EMBEDDED_FILENAME "mm-4ac81907e.MNUE"
 #endif
 inline constexpr const char* kEmbeddedP2Filename = MNUE_EMBEDDED_FILENAME;
 
