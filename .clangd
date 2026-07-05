@@ -1,5 +1,0 @@
-CompileFlags:
-  Compiler: E:/mingw64/bin/g++.exe
-  Add:
-    - -std=c++20
-    - -iquotesrc
