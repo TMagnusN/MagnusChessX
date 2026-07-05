@@ -1,10 +1,9 @@
 <div align="center">
 
-  <img src="logo.png" alt="MagnusChessX Thinking logo" width="760">
+  <img src="Assets/Images/logo.png" alt="MagnusChessX Thinking logo" width="760">
 
   [![C++20][cpp-badge]][repo-link]
   [![UCI][uci-badge]][repo-link]
-  [![MNUE][mnue-badge]][mnue-link]
   [![Syzygy][syzygy-badge]][fathom-link]
   [![License][license-badge]][license-link]
   [![Commits][commits-badge]][commits-link]
@@ -32,10 +31,10 @@ In my opinion, if you only need the engine, you do not need to install Rust.
 
 0. Make sure your compiler toolchain is installed. On Windows this normally means a [MinGW-w64][mingw-w64-link] / [MSYS2][msys2-link]-style `g++` and `mingw32-make`; on Linux, a recent `g++` and `make`.
 1. Clone this repository to your machine via `git clone git@github.com:TMagnusN/MagnusChessX.git`.
-2. Enter the source directory via `cd MagnusChessX/src`.
+2. Enter the source directory via `cd MagnusChessX/Src`.
 3. Make sure the embedded network is available. All neural networks for MagnusChessX can be found on the page of the [TMagnusN/MagnusMNUE](https://github.com/TMagnusN/MagnusMNUE) repository. Since the neural network files are large, they are stored separately from the main repository.
 
-   Make sure your machine is connected to the network. The [Makefile](src/Makefile) will automatically download the default embedded network when it is missing. You can also download the network manually and place it in the `build` directory.
+   Make sure your machine is connected to the network. The [Makefile](Src/Makefile) will automatically download the default embedded network when it is missing. You can also download the network manually and place it in the `build` directory.
 
 4. Build MagnusChessX.
 
@@ -62,7 +61,7 @@ The `auto` profile automatically detects the CPU flags supported by your machine
 
 All neural-network architecture work currently used in MagnusChessX is designed for MagnusChessX and trained with [bullet](https://github.com/jw1912/bullet).
 Current training data is generated with [Stockfish tooling](https://github.com/official-stockfish/Stockfish/tree/tools), so the project does not claim original self-play-only training data.
-The current P2 trainer command and embedded-network sync workflow are documented in [docs/MNUE_P2_TRAINER.md](docs/MNUE_P2_TRAINER.md).
+The current P2 trainer command and embedded-network sync workflow are documented in [Notes/MNUE_P2_TRAINER.md](Notes/MNUE_P2_TRAINER.md).
 
 ## Thanks and Acknowledgements
 
@@ -77,7 +76,6 @@ The current P2 trainer command and embedded-network sync workflow are documented
 MagnusChessX is distributed under the MIT License. See [LICENSE][license-link].
 
 [repo-link]: https://github.com/TMagnusN/MagnusChessX
-[mnue-link]: https://github.com/TMagnusN/MagnusMNUE
 [fathom-link]: https://github.com/jdart1/Fathom
 [commits-link]: https://github.com/TMagnusN/MagnusChessX/commits/main
 [license-link]: https://github.com/TMagnusN/MagnusChessX/blob/main/LICENSE
@@ -94,7 +92,6 @@ MagnusChessX is distributed under the MIT License. See [LICENSE][license-link].
 
 [cpp-badge]: https://img.shields.io/badge/C%2B%2B-20-blue?style=for-the-badge
 [uci-badge]: https://img.shields.io/badge/Protocol-UCI-brightgreen?style=for-the-badge
-[mnue-badge]: https://img.shields.io/badge/MNUE-P2%20%2B%20X2-purple?style=for-the-badge
 [syzygy-badge]: https://img.shields.io/badge/Syzygy-7--piece-informational?style=for-the-badge
 [license-badge]: https://img.shields.io/badge/License-MIT-success?style=for-the-badge
 [commits-badge]: https://img.shields.io/github/last-commit/TMagnusN/MagnusChessX/main?style=for-the-badge&label=last%20commit

@@ -10,9 +10,14 @@
 
 .vscode/
 .idea/
+.codex/
 .build/
 src/build/
+Src/build/
 tools/mnue_p2_trainer/target/
+Tools/mnue_p2_trainer/target/
+tools/mnue_data_schedule/target/
+Tools/mnue_data_schedule/target/
 
 .DS_Store
 Thumbs.db
@@ -23,7 +28,11 @@ Thumbs.db
 
 # Local settings
 src/build/.claude/
+Src/build/.claude/
 .deepseek/
 
 *.MNUE
 *.pgn
+
+compile_flags.txt
+*.clangd

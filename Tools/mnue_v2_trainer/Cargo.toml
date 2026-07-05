@@ -1,0 +1,21 @@
+[package]
+name = "mnue_v2_trainer"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.87"
+publish = false
+
+[features]
+default = []
+cuda = ["bullet_lib/cuda", "bullet-trainer/cuda", "bullet-gpu/cuda"]
+
+[dependencies]
+bullet_lib = { git = "https://github.com/jw1912/bullet", rev = "d372d487aedfeb8bdc256b9f694dbcd41016bf82" }
+bullet-trainer = { git = "https://github.com/jw1912/bullet", rev = "d372d487aedfeb8bdc256b9f694dbcd41016bf82" }
+bullet-gpu = { git = "https://github.com/jw1912/bullet", rev = "d372d487aedfeb8bdc256b9f694dbcd41016bf82" }
+bullet-compiler = { git = "https://github.com/jw1912/bullet", rev = "d372d487aedfeb8bdc256b9f694dbcd41016bf82" }
+bulletformat = "1.8.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+mnue_data_schedule = { path = "../mnue_data_schedule" }
+

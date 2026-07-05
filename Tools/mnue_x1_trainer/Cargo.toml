@@ -1,0 +1,15 @@
+[package]
+name = "mnue_x1_trainer"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.87"
+publish = false
+
+[features]
+default = []
+cuda = ["bullet_lib/cuda"]
+
+[dependencies]
+bullet_lib = { git = "https://github.com/jw1912/bullet", rev = "d372d487aedfeb8bdc256b9f694dbcd41016bf82" }
+bulletformat = "1.8.0"
+
