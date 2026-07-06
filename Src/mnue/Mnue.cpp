@@ -71,6 +71,39 @@ constexpr double kMnueCpEndgameDiscount = 8.0;
 constexpr double kMnueCpMinDenominator = 128.0;
 constexpr double kMnueCpMaxDenominator = 168.0;
 
+constexpr int kSearchMaterialScaleBase = 856;
+constexpr int kSearchMaterialScaleRange = 279;
+constexpr int kSearchMaterialScaleDenominator = 1024;
+constexpr int kSearchFiftyMoveScaleBase = 200;
+constexpr int kSearchFiftyMoveClockClamp = 100;
+
+constexpr std::array<double, 4> kWdlA{
+    2.37727934,
+    -12.88614270,
+    28.77964720,
+    82.47173049
+};
+constexpr std::array<double, 4> kWdlB{
+    -0.44227540,
+    4.20132633,
+    -11.59643736,
+    32.47824518
+};
+constexpr int kWdlPlyClamp = 240;
+constexpr double kWdlPlyDivisor = 64.0;
+constexpr double kWdlCpClamp = 2000.0;
+constexpr int kWdlLowMaterialThreshold = 4;
+constexpr double kWdlLowMaterialABonus = 130.0;
+constexpr double kWdlLowMaterialBBonus = 22.0;
+
+[[nodiscard]] constexpr double wdl_horner(
+    const std::array<double, 4>& coefficients,
+    double x
+) noexcept {
+    return ((coefficients[0] * x + coefficients[1]) * x + coefficients[2])
+        * x + coefficients[3];
+}
+
 template<class Layout>
 struct Network {
     bool loaded = false;
@@ -448,17 +481,52 @@ template<class Layout>
     return raw >= 0 ? cp : -cp;
 }
 
+[[nodiscard]] inline int mnue_search_material_scale(
+    const Position& pos
+) noexcept {
+    return kSearchMaterialScaleBase
+        + mnue_material_units(pos) * kSearchMaterialScaleRange
+            / kMnueMaterialMax;
+}
+
+[[nodiscard]] inline int mnue_search_score(
+    int raw,
+    const Position& pos
+) noexcept {
+    i64 scaled = static_cast<i64>(raw)
+        * mnue_search_material_scale(pos)
+        / kSearchMaterialScaleDenominator;
+
+    const int fifty_move_clock = std::clamp(
+        pos.halfmove_clock,
+        0,
+        kSearchFiftyMoveClockClamp
+    );
+    scaled = scaled
+        * (kSearchFiftyMoveScaleBase - fifty_move_clock)
+        / kSearchFiftyMoveScaleBase;
+
+    return static_cast<int>(std::clamp<i64>(
+        scaled,
+        -kMnueCpMaxRaw,
+        kMnueCpMaxRaw
+    ));
+}
+
 [[nodiscard]] inline WinRateParams mnue_win_rate_params(const Position& pos) noexcept {
+    const int material_units = mnue_material_units(pos);
     const double material = mnue_material_ratio(pos);
-    const double ply = static_cast<double>(std::min(240, game_ply(pos))) / 240.0;
+    const double ply =
+        static_cast<double>(std::min(kWdlPlyClamp, game_ply(pos)))
+        / kWdlPlyDivisor;
     const double low_material = 1.0 - material;
 
-    double a = 138.0 + 36.0 * material + 8.0 * ply;
-    double b = 54.0 + 32.0 * material + 6.0 * ply;
+    double a = wdl_horner(kWdlA, ply);
+    double b = wdl_horner(kWdlB, ply);
 
-    if (mnue_material_units(pos) <= 4) {
-        a += 130.0 * low_material;
-        b += 22.0 * low_material;
+    if (material_units <= kWdlLowMaterialThreshold) {
+        a += kWdlLowMaterialABonus * low_material;
+        b += kWdlLowMaterialBBonus * low_material;
     }
 
     return {a, b};
@@ -469,7 +537,11 @@ template<class Layout>
     const Position& pos
 ) noexcept {
     const auto [a, b] = mnue_win_rate_params(pos);
-    const double x = std::clamp(static_cast<double>(cp), -2400.0, 2400.0);
+    const double x = std::clamp(
+        static_cast<double>(cp),
+        -kWdlCpClamp,
+        kWdlCpClamp
+    );
     const double slope = std::max(1.0, b);
 
     const double win = 1.0 / (1.0 + std::exp((a - x) / slope));
@@ -2424,8 +2496,7 @@ bool debug_check_p2_incremental(
 }
 
 int search_score(int v, const Position& pos) noexcept {
-    (void)pos;
-    return v;
+    return mnue_search_score(v, pos);
 }
 
 int material_units(const Position& pos) noexcept {
@@ -2441,7 +2512,7 @@ int to_cp(int v, const Position& pos) noexcept {
 }
 
 int win_rate_model(int v, const Position& pos) noexcept {
-    return mnue_wdl_from_cp(to_cp(v, pos), pos).win;
+    return search_score_to_wdl(search_score(v, pos), pos).win;
 }
 
 int search_score_to_cp(int score, const Position& pos) noexcept {
