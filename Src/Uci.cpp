@@ -883,7 +883,7 @@ struct UciSession {
     Position pos{};
     PositionHistory position_history{};
     timeman::TimeManager time_manager{};
-    bool enable_ponder = false;
+    bool enable_ponder = true;
     bool full_pv = false;
     bool use_msv_smp = false;
     bool msv_info = false;
@@ -1010,7 +1010,7 @@ struct UciSession {
             << timeman::DEFAULT_MOVE_OVERHEAD_MS
             << " min " << timeman::MIN_MOVE_OVERHEAD_MS
             << " max " << timeman::MAX_MOVE_OVERHEAD_MS << "\n";
-        out << "option name Ponder type check default false\n";
+        out << "option name Ponder type check default true\n";
         out << "option name SyzygyPath type string default <empty>\n";
         out << "option name SyzygyProbeDepth type spin default "
             << syzygy::DEFAULT_PROBE_DEPTH
