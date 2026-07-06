@@ -34,6 +34,7 @@ use bullet_lib::{
     value::{ValueTrainerBuilder, loader},
 };
 use bulletformat::ChessBoard;
+use mnue_binpack_loader::ResamplingSfBinpackLoader;
 use mnue_data_schedule::{
     DEFAULT_CHUNK_SHUFFLE_SEED, DEFAULT_CHUNK_VIRTUAL_EPOCHS, DataScheduleOptions, InputDataKind,
     build_data_schedule, input_data_kind_name, print_startup_log,
@@ -103,6 +104,7 @@ struct MainConfig {
     chunk_shuffle_seed: u64,
     chunk_virtual_epochs: usize,
     chunk_sample: Option<usize>,
+    chunk_resample_on_exhaustion: bool,
     output_dir: String,
     net_dir: String,
     net_id: String,
@@ -115,6 +117,7 @@ impl MainConfig {
         let mut chunk_shuffle_seed = DEFAULT_CHUNK_SHUFFLE_SEED;
         let mut chunk_virtual_epochs = DEFAULT_CHUNK_VIRTUAL_EPOCHS;
         let mut chunk_sample = None;
+        let mut chunk_resample_on_exhaustion = false;
         let mut output_dir = DEFAULT_OUTPUT_DIR.to_string();
         let mut net_dir = DEFAULT_NET_DIR.to_string();
         let mut net_id = DEFAULT_NET_ID.to_string();
@@ -126,6 +129,12 @@ impl MainConfig {
             let Some(key_value) = arg.strip_prefix("--") else {
                 die_main(format!("unexpected positional argument: {arg}"));
             };
+
+            if key_value == "chunk-resample-on-exhaustion" {
+                chunk_resample_on_exhaustion = true;
+                idx += 1;
+                continue;
+            }
 
             let (key, value) = if let Some((key, value)) = key_value.split_once('=') {
                 (key, value.to_string())
@@ -169,6 +178,7 @@ impl MainConfig {
             chunk_shuffle_seed,
             chunk_virtual_epochs,
             chunk_sample,
+            chunk_resample_on_exhaustion,
             output_dir,
             net_dir,
             net_id,
@@ -182,6 +192,7 @@ impl MainConfig {
             chunk_shuffle_seed: self.chunk_shuffle_seed,
             chunk_virtual_epochs: self.chunk_virtual_epochs,
             chunk_sample: self.chunk_sample,
+            chunk_resample_on_exhaustion: self.chunk_resample_on_exhaustion,
         }
     }
 }
@@ -211,7 +222,7 @@ fn parse_main_usize(option: &str, value: &str) -> usize {
 fn die_main(message: impl std::fmt::Display) -> ! {
     eprintln!("error: {message}");
     eprintln!(
-        "legacy X2 options: --arch x2 --data PATH --data-dir DIR --chunk-shuffle-seed N --chunk-virtual-epochs N --chunk-sample N --output-dir PATH --net-dir PATH --net-id NAME"
+        "legacy X2 options: --arch x2 --data PATH --data-dir DIR --chunk-shuffle-seed N --chunk-virtual-epochs N --chunk-sample N --chunk-resample-on-exhaustion --output-dir PATH --net-dir PATH --net-id NAME"
     );
     process::exit(2);
 }
@@ -650,13 +661,26 @@ fn main() {
             trainer.run(&schedule, &settings, &data_loader);
         }
         InputDataKind::SfBinpack => {
-            let data_loader = loader::SfBinpackLoader::new_concat_multiple(
-                &path_refs,
-                BINPACK_BUFFER_MB,
-                settings.threads,
-                accept_all_binpack,
-            );
-            trainer.run(&schedule, &settings, &data_loader);
+            if data_schedule.resample_on_exhaustion {
+                let data_loader = ResamplingSfBinpackLoader::new(
+                    data_schedule.chunk_path_strings(),
+                    BINPACK_BUFFER_MB,
+                    settings.threads,
+                    accept_all_binpack,
+                    data_schedule.seed,
+                    data_schedule.virtual_epochs,
+                    data_schedule.chunk_sample,
+                );
+                trainer.run(&schedule, &settings, &data_loader);
+            } else {
+                let data_loader = loader::SfBinpackLoader::new_concat_multiple(
+                    &path_refs,
+                    BINPACK_BUFFER_MB,
+                    settings.threads,
+                    accept_all_binpack,
+                );
+                trainer.run(&schedule, &settings, &data_loader);
+            }
         }
     }
 

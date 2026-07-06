@@ -21,6 +21,7 @@ pub struct DataScheduleOptions {
     pub chunk_shuffle_seed: u64,
     pub chunk_virtual_epochs: usize,
     pub chunk_sample: Option<usize>,
+    pub chunk_resample_on_exhaustion: bool,
 }
 
 impl Default for DataScheduleOptions {
@@ -31,6 +32,7 @@ impl Default for DataScheduleOptions {
             chunk_shuffle_seed: DEFAULT_CHUNK_SHUFFLE_SEED,
             chunk_virtual_epochs: DEFAULT_CHUNK_VIRTUAL_EPOCHS,
             chunk_sample: None,
+            chunk_resample_on_exhaustion: false,
         }
     }
 }
@@ -38,6 +40,7 @@ impl Default for DataScheduleOptions {
 #[derive(Clone, Debug)]
 pub struct DataSchedule {
     pub kind: InputDataKind,
+    pub chunk_paths: Vec<PathBuf>,
     pub scheduled_paths: Vec<PathBuf>,
     pub explicit_path_count: usize,
     pub discovered_chunk_count: usize,
@@ -45,9 +48,17 @@ pub struct DataSchedule {
     pub seed: u64,
     pub virtual_epochs: usize,
     pub chunk_sample: Option<usize>,
+    pub resample_on_exhaustion: bool,
 }
 
 impl DataSchedule {
+    pub fn chunk_path_strings(&self) -> Vec<String> {
+        self.chunk_paths
+            .iter()
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect()
+    }
+
     pub fn path_strings(&self) -> Vec<String> {
         self.scheduled_paths
             .iter()
@@ -186,6 +197,7 @@ pub fn build_data_schedule(
     if binpack_paths.is_empty() {
         return Ok(DataSchedule {
             kind: InputDataKind::Direct,
+            chunk_paths: Vec::new(),
             scheduled_paths: direct_paths,
             explicit_path_count,
             discovered_chunk_count,
@@ -193,6 +205,7 @@ pub fn build_data_schedule(
             seed: options.chunk_shuffle_seed,
             virtual_epochs: options.chunk_virtual_epochs,
             chunk_sample: options.chunk_sample,
+            resample_on_exhaustion: options.chunk_resample_on_exhaustion,
         });
     }
 
@@ -219,6 +232,7 @@ pub fn build_data_schedule(
 
     Ok(DataSchedule {
         kind: InputDataKind::SfBinpack,
+        chunk_paths: chunks,
         scheduled_paths,
         explicit_path_count,
         discovered_chunk_count,
@@ -226,6 +240,7 @@ pub fn build_data_schedule(
         seed: options.chunk_shuffle_seed,
         virtual_epochs: options.chunk_virtual_epochs,
         chunk_sample: options.chunk_sample,
+        resample_on_exhaustion: options.chunk_resample_on_exhaustion,
     })
 }
 
@@ -246,6 +261,14 @@ pub fn print_startup_log(schedule: &DataSchedule) {
         Some(sample) => println!("Chunk sample: {sample}"),
         None => println!("Chunk sample: all"),
     }
+    println!(
+        "Chunk resample on exhaustion: {}",
+        if schedule.resample_on_exhaustion {
+            "yes"
+        } else {
+            "no"
+        }
+    );
     println!("First scheduled chunks:");
     for (idx, path) in schedule.scheduled_paths.iter().take(8).enumerate() {
         println!("  {}: {}", idx + 1, path.display());

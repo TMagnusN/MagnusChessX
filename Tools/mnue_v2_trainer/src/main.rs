@@ -112,6 +112,7 @@ fn main() {
         chunk_shuffle_seed: cli.chunk_shuffle_seed,
         chunk_virtual_epochs: cli.chunk_virtual_epochs,
         chunk_sample: cli.chunk_sample,
+        chunk_resample_on_exhaustion: cli.chunk_resample_on_exhaustion,
     })
     .unwrap_or_else(|e| {
         eprintln!("dataset error: {e}");
@@ -136,6 +137,11 @@ fn main() {
     let inspect_config = DatasetConfig {
         kind: data_schedule.kind,
         paths: data_schedule.scheduled_paths.clone(),
+        chunk_paths: data_schedule.chunk_paths.clone(),
+        chunk_resample_on_exhaustion: data_schedule.resample_on_exhaustion,
+        chunk_shuffle_seed: data_schedule.seed,
+        chunk_virtual_epochs: data_schedule.virtual_epochs,
+        chunk_sample: data_schedule.chunk_sample,
         accepted_limit: retained_samples as u64,
         wdl_blend: 0.75,
         score_scale: SCORE_SCALE as f32,
@@ -238,6 +244,11 @@ fn main() {
         config: DatasetConfig {
             kind: data_schedule.kind,
             paths: data_schedule.scheduled_paths.clone(),
+            chunk_paths: data_schedule.chunk_paths.clone(),
+            chunk_resample_on_exhaustion: data_schedule.resample_on_exhaustion,
+            chunk_shuffle_seed: data_schedule.seed,
+            chunk_virtual_epochs: data_schedule.virtual_epochs,
+            chunk_sample: data_schedule.chunk_sample,
             accepted_limit: usable_limit,
             wdl_blend: 0.75,
             score_scale: SCORE_SCALE as f32,

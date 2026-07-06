@@ -49,6 +49,7 @@ use bullet_lib::{
     value::{ValueTrainerBuilder, loader},
 };
 use bulletformat::ChessBoard;
+use mnue_binpack_loader::ResamplingSfBinpackLoader;
 use mnue_data_schedule::{
     DEFAULT_CHUNK_SHUFFLE_SEED, DEFAULT_CHUNK_VIRTUAL_EPOCHS, DataSchedule, DataScheduleOptions,
     InputDataKind, build_data_schedule, input_data_kind_name, print_startup_log,
@@ -195,6 +196,7 @@ struct Config {
     chunk_shuffle_seed: u64,
     chunk_virtual_epochs: usize,
     chunk_sample: Option<usize>,
+    chunk_resample_on_exhaustion: bool,
     positions: u128,
     batch_size: usize,
     threads: usize,
@@ -216,6 +218,7 @@ impl Config {
         let mut chunk_shuffle_seed = DEFAULT_CHUNK_SHUFFLE_SEED;
         let mut chunk_virtual_epochs = DEFAULT_CHUNK_VIRTUAL_EPOCHS;
         let mut chunk_sample = None;
+        let mut chunk_resample_on_exhaustion = false;
         let mut positions = DEFAULT_POSITIONS;
         let mut batch_size = DEFAULT_BATCH_SIZE;
         let mut threads = DEFAULT_THREADS;
@@ -241,6 +244,12 @@ impl Config {
             let Some(key_value) = arg.strip_prefix("--") else {
                 die(format!("unexpected positional argument: {arg}"));
             };
+
+            if key_value == "chunk-resample-on-exhaustion" {
+                chunk_resample_on_exhaustion = true;
+                idx += 1;
+                continue;
+            }
 
             let (key, value) = if let Some((key, value)) = key_value.split_once('=') {
                 (key, value.to_string())
@@ -298,6 +307,7 @@ impl Config {
             chunk_shuffle_seed,
             chunk_virtual_epochs,
             chunk_sample,
+            chunk_resample_on_exhaustion,
             positions,
             batch_size,
             threads,
@@ -332,6 +342,7 @@ impl Config {
             chunk_shuffle_seed: self.chunk_shuffle_seed,
             chunk_virtual_epochs: self.chunk_virtual_epochs,
             chunk_sample: self.chunk_sample,
+            chunk_resample_on_exhaustion: self.chunk_resample_on_exhaustion,
         }
     }
 
@@ -374,6 +385,7 @@ fn print_usage() {
            --chunk-shuffle-seed N      Virtual chunk shuffle seed. Default: {DEFAULT_CHUNK_SHUFFLE_SEED}\n\
            --chunk-virtual-epochs N    Number of virtual chunk schedule passes. Default: {DEFAULT_CHUNK_VIRTUAL_EPOCHS}\n\
            --chunk-sample N            Chunks sampled without replacement per virtual pass. Default: all\n\
+           --chunk-resample-on-exhaustion  Rebuild a new virtual chunk pool after the current one is exhausted.\n\
            --positions N               Total training positions. Default: {DEFAULT_POSITIONS}\n\
            --batch-size N              Positions per batch. Default: {DEFAULT_BATCH_SIZE}\n\
            --threads N                 CPU data-prep threads. Default: {DEFAULT_THREADS}\n\
@@ -707,13 +719,26 @@ fn run_training<S: P2Spec>(config: Config) {
             trainer.run(&schedule, &settings, &data_loader);
         }
         InputDataKind::SfBinpack => {
-            let data_loader = loader::SfBinpackLoader::new_concat_multiple(
-                &path_refs,
-                BINPACK_BUFFER_MB,
-                config.threads,
-                accept_all_binpack,
-            );
-            trainer.run(&schedule, &settings, &data_loader);
+            if data_schedule.resample_on_exhaustion {
+                let data_loader = ResamplingSfBinpackLoader::new(
+                    data_schedule.chunk_path_strings(),
+                    BINPACK_BUFFER_MB,
+                    config.threads,
+                    accept_all_binpack,
+                    data_schedule.seed,
+                    data_schedule.virtual_epochs,
+                    data_schedule.chunk_sample,
+                );
+                trainer.run(&schedule, &settings, &data_loader);
+            } else {
+                let data_loader = loader::SfBinpackLoader::new_concat_multiple(
+                    &path_refs,
+                    BINPACK_BUFFER_MB,
+                    config.threads,
+                    accept_all_binpack,
+                );
+                trainer.run(&schedule, &settings, &data_loader);
+            }
         }
     }
 

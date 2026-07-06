@@ -24,6 +24,7 @@ use bullet_trainer::{
     },
 };
 use bulletformat::{BulletFormat, ChessBoard};
+use mnue_binpack_loader::ResamplingSfBinpackLoader;
 use mnue_data_schedule::{
     DEFAULT_CHUNK_SHUFFLE_SEED, DEFAULT_CHUNK_VIRTUAL_EPOCHS, DataScheduleOptions, InputDataKind,
     build_data_schedule, input_data_kind_name, print_startup_log,
@@ -167,6 +168,7 @@ struct Cli {
     chunk_shuffle_seed: u64,
     chunk_virtual_epochs: usize,
     chunk_sample: Option<usize>,
+    chunk_resample_on_exhaustion: bool,
     output_dir: PathBuf,
     export: PathBuf,
     positions: u64,
@@ -206,6 +208,7 @@ impl Default for Cli {
             chunk_shuffle_seed: DEFAULT_CHUNK_SHUFFLE_SEED,
             chunk_virtual_epochs: DEFAULT_CHUNK_VIRTUAL_EPOCHS,
             chunk_sample: None,
+            chunk_resample_on_exhaustion: false,
             output_dir: PathBuf::from(DEFAULT_OUTPUT_DIR),
             export: PathBuf::from(DEFAULT_EXPORT),
             positions: 0,
@@ -263,6 +266,7 @@ impl Cli {
                     | "--chunk-shuffle-seed"
                     | "--chunk-virtual-epochs"
                     | "--chunk-sample"
+                    | "--chunk-resample-on-exhaustion"
                     | "--output-dir"
                     | "--export"
                     | "--batch-size"
@@ -324,6 +328,7 @@ impl Cli {
                             .map_err(|_| "invalid --chunk-sample".to_string())?,
                     );
                 }
+                "--chunk-resample-on-exhaustion" => cli.chunk_resample_on_exhaustion = true,
                 "--output-dir" => cli.output_dir = PathBuf::from(next_value(&mut iter, &arg)?),
                 "--export" => cli.export = PathBuf::from(next_value(&mut iter, &arg)?),
                 "--positions" | "--date" => {
@@ -441,6 +446,7 @@ impl Cli {
          --chunk-shuffle-seed N    virtual chunk shuffle seed; default 1\n\
          --chunk-virtual-epochs N  virtual chunk schedule passes; default 1024\n\
          --chunk-sample N          chunks sampled without replacement per virtual pass\n\
+         --chunk-resample-on-exhaustion rebuild a new virtual chunk pool after the current one is exhausted\n\
          --output-dir PATH         checkpoint/output directory\n\
          --export PATH             exported .mnue path\n\
          --positions N             accepted-position limit; 0 uses default schedule\n\
@@ -546,6 +552,7 @@ impl Cli {
             chunk_shuffle_seed: self.chunk_shuffle_seed,
             chunk_virtual_epochs: self.chunk_virtual_epochs,
             chunk_sample: self.chunk_sample,
+            chunk_resample_on_exhaustion: self.chunk_resample_on_exhaustion,
         }
     }
 }
@@ -2332,6 +2339,11 @@ fn prepare_boards_batch(boards: &[ChessBoard], threads: usize) -> PreparedBatchH
 struct MnueK16DataLoader {
     kind: InputDataKind,
     paths: Vec<PathBuf>,
+    chunk_paths: Vec<PathBuf>,
+    chunk_resample_on_exhaustion: bool,
+    chunk_shuffle_seed: u64,
+    chunk_virtual_epochs: usize,
+    chunk_sample: Option<usize>,
     limit: u64,
     threads: usize,
 }
@@ -2388,13 +2400,31 @@ impl DataLoader for MnueK16DataLoader {
                 direct.map_chunks(0, |chunk: &[ChessBoard]| map_chunk(chunk));
             }
             InputDataKind::SfBinpack => {
-                let binpack = SfBinpackLoader::new_concat_multiple(
-                    &path_refs,
-                    BINPACK_BUFFER_MB,
-                    self.threads,
-                    accept_all_binpack,
-                );
-                binpack.map_chunks(0, |chunk: &[ChessBoard]| map_chunk(chunk));
+                if self.chunk_resample_on_exhaustion {
+                    let chunk_path_strings = self
+                        .chunk_paths
+                        .iter()
+                        .map(|path| path.to_string_lossy().into_owned())
+                        .collect::<Vec<_>>();
+                    let binpack = ResamplingSfBinpackLoader::new(
+                        chunk_path_strings,
+                        BINPACK_BUFFER_MB,
+                        self.threads,
+                        accept_all_binpack,
+                        self.chunk_shuffle_seed,
+                        self.chunk_virtual_epochs,
+                        self.chunk_sample,
+                    );
+                    binpack.map_chunks(0, |chunk: &[ChessBoard]| map_chunk(chunk));
+                } else {
+                    let binpack = SfBinpackLoader::new_concat_multiple(
+                        &path_refs,
+                        BINPACK_BUFFER_MB,
+                        self.threads,
+                        accept_all_binpack,
+                    );
+                    binpack.map_chunks(0, |chunk: &[ChessBoard]| map_chunk(chunk));
+                }
             }
         }
 
@@ -3831,6 +3861,11 @@ fn run_training(cli: Cli) -> io::Result<()> {
             MnueK16DataLoader {
                 kind: data_schedule.kind,
                 paths: scheduled_paths,
+                chunk_paths: data_schedule.chunk_paths.clone(),
+                chunk_resample_on_exhaustion: data_schedule.resample_on_exhaustion,
+                chunk_shuffle_seed: data_schedule.seed,
+                chunk_virtual_epochs: data_schedule.virtual_epochs,
+                chunk_sample: data_schedule.chunk_sample,
                 limit: if cli.positions == 0 {
                     0
                 } else {

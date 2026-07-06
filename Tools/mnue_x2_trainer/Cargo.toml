@@ -15,5 +15,5 @@ bullet-trainer = { git = "https://github.com/jw1912/bullet", rev = "d372d487aedf
 bullet-gpu = { git = "https://github.com/jw1912/bullet", rev = "d372d487aedfeb8bdc256b9f694dbcd41016bf82" }
 bullet-compiler = { git = "https://github.com/jw1912/bullet", rev = "d372d487aedfeb8bdc256b9f694dbcd41016bf82" }
 bulletformat = "1.8.0"
+mnue_binpack_loader = { path = "../mnue_binpack_loader" }
 mnue_data_schedule = { path = "../mnue_data_schedule" }
-

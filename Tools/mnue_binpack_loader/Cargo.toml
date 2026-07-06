@@ -1,5 +1,5 @@
 [package]
-name = "mnue_p2_trainer"
+name = "mnue_binpack_loader"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.87"
@@ -12,5 +12,4 @@ cuda = ["bullet_lib/cuda"]
 [dependencies]
 bullet_lib = { git = "https://github.com/jw1912/bullet", rev = "d372d487aedfeb8bdc256b9f694dbcd41016bf82" }
 bulletformat = "1.8.0"
-mnue_binpack_loader = { path = "../mnue_binpack_loader" }
-mnue_data_schedule = { path = "../mnue_data_schedule" }
+sfbinpack = "0.6.0"
