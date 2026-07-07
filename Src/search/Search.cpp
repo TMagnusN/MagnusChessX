@@ -1316,7 +1316,7 @@ struct Searcher {
 
         memory::tt_save(
             mem.tt,
-            pos.key,
+            memory::tt_key(pos, mem.tables),
             Move(0),
             score_to_tt_i16(score, ply),
             raw_eval_to_tt_i16(VALUE_NONE),
@@ -2169,34 +2169,88 @@ struct Searcher {
         return false;
     }
 
-    [[nodiscard]] bool has_upcoming_repetition(
-        Position& pos,
-        const GenInfo& info,
-        int ply
-    ) noexcept {
-        if (limits.contempt == 0 || pos.halfmove_clock < 4)
+    [[nodiscard]] bool previous_repetition_key(
+        int ply,
+        int plies_back,
+        Key& key
+    ) const noexcept {
+        if (plies_back < 0)
             return false;
 
-        MoveList quiets{};
-        Move* qend = generate_pseudo_quiets(pos, mem, info, quiets.moves);
-        quiets.size = static_cast<int>(qend - quiets.moves);
+        if (plies_back <= ply) {
+            key = rep_keys[ply - plies_back];
+            return true;
+        }
 
-        for (int i = 0; i < quiets.size; ++i) {
-            const Move move = quiets.moves[i];
-            if (move_is_castle(move))
-                continue;
-            if (piece_type_on(pos, from_sq(move)) == PAWN)
-                continue;
-            if (!legal_fast(pos, mem, info, move))
+        const int history_plies = plies_back - ply;
+        if (history_plies <= 0 ||
+            history_plies > limits.game_history_count) {
+            return false;
+        }
+
+        key = limits.game_history_keys[
+            limits.game_history_count - history_plies
+        ];
+        return true;
+    }
+
+    [[nodiscard]] bool has_upcoming_repetition(
+        const Position& pos,
+        int ply
+    ) noexcept {
+        if (limits.contempt == 0 || pos.halfmove_clock < 3 ||
+            !mem.tables.cuckoo_repetition.valid) {
+            return false;
+        }
+
+        const int available_plies = std::min(
+            pos.halfmove_clock,
+            ply + limits.game_history_count
+        );
+        if (available_plies < 3)
+            return false;
+
+        Key prev_key = 0;
+        if (!previous_repetition_key(ply, 1, prev_key))
+            return false;
+
+        const CuckooRepetitionTables& cuckoo =
+            mem.tables.cuckoo_repetition;
+        const Key side_key = mem.tables.zobrist.side;
+        Key other = pos.key ^ prev_key ^ side_key;
+
+        for (int i = 3; i <= available_plies; i += 2) {
+            Key key_i_minus_1 = 0;
+            Key key_i = 0;
+            if (!previous_repetition_key(ply, i - 1, key_i_minus_1) ||
+                !previous_repetition_key(ply, i, key_i)) {
+                break;
+            }
+
+            other ^= key_i_minus_1 ^ key_i ^ side_key;
+            if (other != 0)
                 continue;
 
-            StateInfo st;
-            make_move(pos, move, mem.tables, st);
-            const bool repeats = is_repetition_draw(pos, ply + 1);
-            unmake_move(pos, move, mem.tables, st);
+            const Key diff = pos.key ^ key_i;
+            std::size_t slot = cuckoo_repetition_h1(diff);
+            if (cuckoo.keys[slot] != diff) {
+                slot = cuckoo_repetition_h2(diff);
+                if (cuckoo.keys[slot] != diff)
+                    continue;
+            }
 
-            if (repeats)
+            const Move move = cuckoo.moves[slot];
+            const Square from = from_sq(move);
+            const Square to = to_sq(move);
+            if ((mem.tables.between[from][to] & pos.occupied) != 0ULL)
+                continue;
+
+            if (ply > i)
                 return true;
+
+            const Square target =
+                piece_on(pos, from) != PIECE_NONE ? from : to;
+            return color_on(pos, target) == pos.side_to_move;
         }
 
         return false;
@@ -2333,7 +2387,7 @@ struct Searcher {
     ) noexcept {
         memory::tt_save(
             mem.tt,
-            pos.key,
+            memory::tt_key(pos, mem.tables),
             best_move,
             score_to_tt_i16(score, ply),
             raw_eval_to_tt_i16(raw_eval),
@@ -2565,7 +2619,7 @@ struct Searcher {
             list = filtered;
         }
 
-        const memory::TTProbe probe = memory::tt_probe(mem.tt, root.key);
+        const memory::TTProbe probe = memory::tt_probe(mem.tt, memory::tt_key(root, mem.tables));
         const Move tt_move = tt_move_from_probe(probe);
         ScoredMoveList scored{};
         score_moves(root, list, scored, tt_move, 0, depth);
@@ -2658,7 +2712,7 @@ struct Searcher {
 
         const int alpha0 = alpha;
         const bool pv_node = (beta - alpha) > 1;
-        const memory::TTProbe probe = memory::tt_probe(mem.tt, pos.key);
+        const memory::TTProbe probe = memory::tt_probe(mem.tt, memory::tt_key(pos, mem.tables));
         if (is_repetition_draw(pos, ply))
             return repetition_score(pos.side_to_move, tt_raw_eval_from_probe(probe));
 
@@ -2748,7 +2802,7 @@ struct Searcher {
 
             StateInfo st;
             make_search_move(pos, move, st);
-            memory::tt_prefetch(mem.tt, pos.key);
+            memory::tt_prefetch(mem.tt, memory::tt_key(pos, mem.tables));
 
             const int score = -qsearch(pos, -beta, -alpha, ply + 1);
             unmake_search_move(pos, move, st);
@@ -2812,7 +2866,7 @@ struct Searcher {
         const int alpha0 = alpha;
         const bool pv_node = (beta - alpha) > 1;
         const bool exclusion_search = !move_is_none(excluded_move);
-        const memory::TTProbe probe = memory::tt_probe(mem.tt, pos.key);
+        const memory::TTProbe probe = memory::tt_probe(mem.tt, memory::tt_key(pos, mem.tables));
         if (is_repetition_draw(pos, ply))
             return repetition_score(pos.side_to_move, tt_raw_eval_from_probe(probe));
         const Move probed_tt_move = tt_move_from_probe(probe);
@@ -3055,7 +3109,7 @@ struct Searcher {
         if (!pv_node) {
             const int draw_floor = draw_score(pos.side_to_move);
             if (alpha < draw_floor &&
-                has_upcoming_repetition(pos, info, ply)) {
+                has_upcoming_repetition(pos, ply)) {
                 alpha = draw_floor;
                 if (alpha >= beta)
                     return alpha;
@@ -3104,7 +3158,7 @@ struct Searcher {
                     StateInfo st;
                     set_move_history_context(pos, move, ply);
                     make_search_move(pos, move, st);
-                    memory::tt_prefetch(mem.tt, pos.key);
+                    memory::tt_prefetch(mem.tt, memory::tt_key(pos, mem.tables));
 
                     int score = -qsearch(pos, -probcut_beta, -probcut_beta + 1, ply + 1);
                     if (score >= probcut_beta) {
@@ -3685,7 +3739,7 @@ struct Searcher {
             const u64 move_nodes_before = nodes;
             set_move_history_context(pos, move, ply);
             make_search_move(pos, move, st);
-            memory::tt_prefetch(mem.tt, pos.key);
+            memory::tt_prefetch(mem.tt, memory::tt_key(pos, mem.tables));
 
             const int new_depth = search_depth - 1 + move_extension;
             int score = 0;
@@ -4010,7 +4064,7 @@ struct Searcher {
         StateInfo st;
         set_move_history_context(local_root, move, 0);
         make_search_move(local_root, move, st);
-        memory::tt_prefetch(mem.tt, local_root.key);
+        memory::tt_prefetch(mem.tt, memory::tt_key(local_root, mem.tables));
 
         int score = 0;
         if (full_window) {
@@ -4081,7 +4135,7 @@ struct Searcher {
             list = filtered;
         }
 
-        const memory::TTProbe probe = memory::tt_probe(mem.tt, root.key);
+        const memory::TTProbe probe = memory::tt_probe(mem.tt, memory::tt_key(root, mem.tables));
         const Move tt_move = tt_move_from_probe(probe);
         const Move root_hint = move_is_none(tt_move) ? hint_move : tt_move;
         const bool checked = in_check(root);
@@ -4168,7 +4222,7 @@ struct Searcher {
         update_seldepth(0);
         rep_keys[0] = root.key;
 
-        const memory::TTProbe probe = memory::tt_probe(mem.tt, root.key);
+        const memory::TTProbe probe = memory::tt_probe(mem.tt, memory::tt_key(root, mem.tables));
         const Move tt_move = tt_move_from_probe(probe);
         const bool checked = in_check(root);
         const StaticEvalInfo eval_info = resolve_static_eval(root, probe, 0, checked, false);
@@ -4796,11 +4850,12 @@ bool append_pv_previous_key(
     );
 
     int pv_length = 0;
+    int made_count = 0;
     while (pv_length < length_limit) {
         const Move move = pv_length == 0
             ? first_move
             : [&]() noexcept {
-                const memory::TTProbe probe = memory::tt_probe(mem.tt, root.key);
+                const memory::TTProbe probe = memory::tt_probe(mem.tt, memory::tt_key(root, mem.tables));
                 return probe.hit
                     ? static_cast<Move>(probe.data.move)
                     : Move(0);
@@ -4809,18 +4864,27 @@ bool append_pv_previous_key(
         if (!pv_move_is_legal(root, mem, move))
             break;
 
-        out[pv_length] = move;
-        made_moves[static_cast<std::size_t>(pv_length)] = move;
+        const int made_index = made_count++;
+        made_moves[static_cast<std::size_t>(made_index)] = move;
         make_move(
             root,
             move,
             mem.tables,
-            states[static_cast<std::size_t>(pv_length)]
+            states[static_cast<std::size_t>(made_index)]
         );
+
+        const bool repetition_terminal =
+            pv_repetition_terminal(root, keys.data(), key_count);
+        if (repetition_terminal && pv_length > 0)
+            break;
+
+        out[pv_length] = move;
         ++pv_length;
 
-        if (pv_position_is_terminal(root, mem, keys.data(), key_count))
+        if (repetition_terminal ||
+            pv_position_is_terminal(root, mem, keys.data(), key_count)) {
             break;
+        }
 
         append_pv_previous_key(
             keys.data(),
@@ -4830,7 +4894,7 @@ bool append_pv_previous_key(
         );
     }
 
-    for (int i = pv_length - 1; i >= 0; --i) {
+    for (int i = made_count - 1; i >= 0; --i) {
         unmake_move(
             root,
             made_moves[static_cast<std::size_t>(i)],
@@ -4935,9 +4999,13 @@ bool append_pv_previous_key(
         StateInfo state{};
         make_move(pos, move, mem.tables, state);
         const int accepted_length = i + 1;
+        const bool repetition_terminal =
+            pv_repetition_terminal(pos, keys.data(), key_count);
 
-        if (pos.halfmove_clock >= 100 ||
-            pv_repetition_terminal(pos, keys.data(), key_count)) {
+        if (repetition_terminal && i > 0)
+            return i;
+
+        if (pos.halfmove_clock >= 100 || repetition_terminal) {
             return accepted_length;
         }
 
@@ -5105,7 +5173,8 @@ void build_root_lines(
         list = filtered;
     }
 
-    const memory::TTProbe probe = memory::tt_probe(searcher.mem.tt, root.key);
+    const memory::TTProbe probe =
+        memory::tt_probe(searcher.mem.tt, memory::tt_key(root, searcher.mem.tables));
     const Move tt_move = searcher.tt_move_from_probe(probe);
     ScoredMoveList scored{};
     searcher.score_moves(root, list, scored, tt_move, 0, depth);

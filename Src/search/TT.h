@@ -38,6 +38,7 @@ SOFTWARE.
 
 #include "Types.h"
 #include "Tables.h"
+#include "board/Position.h"
 
 namespace magnus::memory {
 
@@ -126,6 +127,23 @@ void tt_resize_mb(TT& tt, std::size_t mb);
 void tt_new_search(TT& tt) noexcept;
 
 [[nodiscard]] std::size_t tt_index(const TT& tt, Key key) noexcept;
+[[nodiscard]] constexpr int rule50_bucket(int halfmove_clock) noexcept {
+    return halfmove_clock < 50
+        ? 0
+        : std::min(15, (halfmove_clock - 8) / 8);
+}
+
+static_assert(rule50_bucket(0) == 0);
+static_assert(rule50_bucket(49) == 0);
+static_assert(rule50_bucket(50) == 5);
+static_assert(rule50_bucket(58) == 6);
+static_assert(rule50_bucket(66) == 7);
+static_assert(rule50_bucket(200) == 15);
+
+[[nodiscard]] inline Key tt_key(const Position& pos, const Tables& tables) noexcept {
+    return pos.key ^ tables.zobrist.rule50[rule50_bucket(pos.halfmove_clock)];
+}
+
 void tt_prefetch(const TT& tt, Key key) noexcept;
 [[nodiscard]] TTProbe tt_probe(TT& tt, Key key) noexcept;
 
