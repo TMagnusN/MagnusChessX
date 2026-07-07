@@ -193,12 +193,6 @@ static_assert(score_from_tt(VALUE_TB - 7, 0, 93) == VALUE_TB - 7);
 #define MAGNUS_ENABLE_SINGULAR_EXTENSION 1
 #endif
 
-#ifndef MAGNUS_SEE_LATE_BAD_CAPTURE_GATE_THRESHOLD
-#define MAGNUS_SEE_LATE_BAD_CAPTURE_GATE_THRESHOLD -60
-#endif
-constexpr int SEE_LATE_BAD_CAPTURE_GATE_THRESHOLD =
-    MAGNUS_SEE_LATE_BAD_CAPTURE_GATE_THRESHOLD;
-
 #ifndef MAGNUS_SEE_TERM_PRESET
 #define MAGNUS_SEE_TERM_PRESET 1
 #endif
@@ -1605,7 +1599,7 @@ struct Searcher {
     }
 
     [[nodiscard]] inline bool singular_cost_pressure() const noexcept {
-        return nodes >= SINGULAR_COST_GATE_MIN_NODES
+        return nodes >= static_cast<u64>(SINGULAR_COST_GATE_MIN_NODES)
             && singular_verification_nodes * 100
                 >= nodes * static_cast<u64>(SINGULAR_COST_RATIO_PERCENT);
     }
@@ -1671,7 +1665,7 @@ struct Searcher {
             ++ctx.trust;
 
         const std::size_t node_index = static_cast<std::size_t>(ctx.node_kind);
-        ctx.normal_threshold = SINGULAR_TRUST_THRESHOLDS[node_index];
+        ctx.normal_threshold = singular_trust_threshold(node_index);
         ctx.threshold = ctx.normal_threshold + (ctx.cost_pressure ? 2 : 0);
         ctx.bucket_index = singular_telemetry_bucket_index(
             ctx.node_kind,
@@ -2091,7 +2085,7 @@ struct Searcher {
             + CORRECTION_MATERIAL_WEIGHT
                 * correction_slot_value(material_correction_history[side], keys.material);
         return std::clamp(
-            stored / (CORRECTION_HISTORY_GRAIN * CORRECTION_WEIGHT_SUM),
+            stored / (CORRECTION_HISTORY_GRAIN * correction_weight_sum()),
             -CORRECTION_HISTORY_CLAMP,
             CORRECTION_HISTORY_CLAMP
         );
@@ -2930,12 +2924,12 @@ struct Searcher {
             }
         }
 
-        // RAZOR_MARGIN[...] is only accessed after depth <= 2 is confirmed
-        // through short-circuit evaluation.
+        // razor_margin() is only used after depth <= 2 is confirmed through
+        // short-circuit evaluation.
         if (limits.components.razoring &&
             can_prune &&
             search_depth <= 2 &&
-            razor_eval + RAZOR_MARGIN[search_depth] <= alpha) {
+            razor_eval + razor_margin(search_depth) <= alpha) {
             const int score = qsearch(pos, alpha, beta, ply);
             if (score <= alpha)
                 return score;
@@ -3143,12 +3137,11 @@ struct Searcher {
 
 #if MAGNUS_ENABLE_SMALL_PROBCUT
         {
-            constexpr int SMALL_PROBCUT_MARGIN = 416;
             const int small_probcut_beta = beta + SMALL_PROBCUT_MARGIN;
             if (limits.components.small_probcut &&
                 !pv_node && probe.hit
                 && tt_bound == memory::BOUND_LOWER
-                && probe.data.depth >= search_depth - 4
+                && probe.data.depth >= search_depth - SMALL_PROBCUT_TT_DEPTH_MARGIN
                 && probed_tt_score >= small_probcut_beta
                 && !is_mate_window(beta)
                 && !is_mate_window(probed_tt_score)) {

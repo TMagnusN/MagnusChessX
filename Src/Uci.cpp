@@ -53,9 +53,14 @@ SOFTWARE.
 #include "Search.h"
 #include "syzygy/Syzygy.h"
 #include "Time.h"
+#include "Tuning.h"
 
 #ifdef _WIN32
 #include <windows.h>
+#endif
+
+#ifndef MAGNUS_TUNING_UCI_OPTIONS
+#define MAGNUS_TUNING_UCI_OPTIONS 0
 #endif
 
 /*
@@ -989,12 +994,12 @@ struct UciSession {
     }
 
     void emit_banner(std::ostream& out) const {
-        out << "MagnusChessX Thinking 0.1 by the Theodore Magnus Øen Nidhar";
+        out << "MagnusChessX Thinking 1.0.0 by Theodore Magnus Øen Nidhar";
         out << std::endl;
     }
 
     void emit_uci_id(std::ostream& out) const {
-        out << "id name MagnusChessX Thinking 0.1\n";
+        out << "id name MagnusChessX Thinking 1.0.0\n";
 
         out << "id author Theodore Magnus Øen Nidhar\n";
         out << "option name Hash type spin default " << DEFAULT_UCI_HASH_MB
@@ -1022,6 +1027,9 @@ struct UciSession {
             << " min " << syzygy::MIN_PROBE_LIMIT
             << " max " << syzygy::MAX_PROBE_LIMIT << "\n";
         out << "option name MNUEfile type string default " << mnue::kEmbeddedP2Filename << "\n";
+#if MAGNUS_TUNING_UCI_OPTIONS
+        search::tuning::emit_uci_options(out);
+#endif
         out << "uciok" << std::endl;
     }
 
@@ -1243,6 +1251,13 @@ struct UciSession {
 
             if (!ensure_eval_loaded(&out))
                 out << "info string eval unavailable\n";
+        }
+        else {
+            int parsed_tuning_value = 0;
+            if (parse_int(value, parsed_tuning_value) &&
+                search::tuning::set_int_param(name, parsed_tuning_value)) {
+                memory::memory_clear_hash(mem);
+            }
         }
     }
 
@@ -1649,6 +1664,33 @@ struct UciSession {
             return true;
         }
 
+        if (line == "spsa" || line == "spsa json") {
+            search::tuning::emit_spsa(out);
+            return true;
+        }
+
+        if (line == "spsa csv") {
+            search::tuning::emit_spsa_csv(out);
+            return true;
+        }
+
+        if (line == "tuning reset") {
+            search::tuning::reset();
+            memory::memory_clear_hash(mem);
+            out << "info string tuning reset\n";
+            return true;
+        }
+
+        if (line == "tuning json") {
+            search::tuning::emit_spsa_json(out);
+            return true;
+        }
+
+        if (line == "tuning") {
+            search::tuning::emit_values(out);
+            return true;
+        }
+
 
 
         if (line == "eval") {
@@ -1760,7 +1802,8 @@ int run_bench(int argc, char** argv) {
     const auto print_usage = []() {
         std::cerr
             << "usage: MagnusChessXThinking bench [depth=12] [hash_mb=16] [threads=1]\n"
-            << "       MagnusChessXThinking perft <depth>\n";
+            << "       MagnusChessXThinking perft <depth>\n"
+            << "       MagnusChessXThinking spsa [json|csv]\n";
     };
 
     if (argc <= 1) {
@@ -1769,6 +1812,21 @@ int run_bench(int argc, char** argv) {
     }
 
     const std::string_view command{argv[1]};
+    if (command == "spsa") {
+        if (argc == 2 || std::string_view(argv[2]) == "json") {
+            search::tuning::emit_spsa_json(std::cout);
+            return 0;
+        }
+
+        if (argc == 3 && std::string_view(argv[2]) == "csv") {
+            search::tuning::emit_spsa_csv(std::cout);
+            return 0;
+        }
+
+        print_usage();
+        return 1;
+    }
+
     if (command == "bench") {
         int depth = DEFAULT_BENCH_DEPTH;
         int hash_mb = DEFAULT_UCI_HASH_MB;

@@ -26,7 +26,9 @@ SOFTWARE.
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
+#include <mutex>
 
 #include "Search.h"
 #include "TT.h"
@@ -58,12 +60,22 @@ namespace magnus::search {
 
 namespace {
 [[nodiscard]] const std::array<int, LMR_TABLE_MAX_INDEX + 1>& lmr_table() noexcept {
-    static const std::array<int, LMR_TABLE_MAX_INDEX + 1> table = []() {
-        std::array<int, LMR_TABLE_MAX_INDEX + 1> values{};
-        for (int i = 1; i <= LMR_TABLE_MAX_INDEX; ++i)
-            values[i] = std::max(1, static_cast<int>(LMR_TABLE_LOG_SCALE * std::log(double(i))));
-        return values;
-    }();
+    static std::array<int, LMR_TABLE_MAX_INDEX + 1> table{};
+    static std::atomic<std::uint64_t> cached_generation{
+        static_cast<std::uint64_t>(-1)
+    };
+    static std::mutex table_mutex;
+
+    const std::uint64_t current_generation = tuning::generation();
+    if (cached_generation.load(std::memory_order_acquire) != current_generation) {
+        std::lock_guard<std::mutex> lock(table_mutex);
+        if (cached_generation.load(std::memory_order_relaxed) != current_generation) {
+            const double scale = double(LMR_TABLE_LOG_SCALE_X128) / 128.0;
+            for (int i = 1; i <= LMR_TABLE_MAX_INDEX; ++i)
+                table[i] = std::max(1, static_cast<int>(scale * std::log(double(i))));
+            cached_generation.store(current_generation, std::memory_order_release);
+        }
+    }
     return table;
 }
 

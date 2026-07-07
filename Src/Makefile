@@ -18,8 +18,12 @@ else ifeq ($(BUILD_PROFILE),portable64)
   EFFECTIVE_PROFILE := portable64
 else ifeq ($(BUILD_PROFILE),native64)
   EFFECTIVE_PROFILE := native64
+else ifeq ($(BUILD_PROFILE),avx2+bmi2)
+  EFFECTIVE_PROFILE := avx2+bmi2
+else ifeq ($(BUILD_PROFILE),avx512+bmi2)
+  EFFECTIVE_PROFILE := avx512+bmi2
 else
-  $(error Unknown BUILD_PROFILE '$(BUILD_PROFILE)'; use auto, portable64, or native64)
+  $(error Unknown BUILD_PROFILE '$(BUILD_PROFILE)'; use auto, portable64, native64, avx2+bmi2, or avx512+bmi2)
 endif
 
 ifneq ($(PGO),0)
@@ -45,18 +49,18 @@ PGO_BENCH_ARGS ?= bench
 
 SRC := \
 	board/Attack.cpp \
-	History.cpp \
-	Lmr.cpp \
+	search/History.cpp \
+	search/Lmr.cpp \
 	Main.cpp \
-	MovePicker.cpp \
+	search/MovePicker.cpp \
 	board/MoveGen.cpp \
-	Nmp.cpp \
+	search/Nmp.cpp \
 	board/Position.cpp \
-	Search.cpp \
-	See.cpp \
+	search/Search.cpp \
+	search/See.cpp \
 	syzygy/Syzygy.cpp \
-	Time.cpp \
-	TT.cpp \
+	search/Time.cpp \
+	search/TT.cpp \
 	Uci.cpp \
 	mnue/Mnue.cpp \
 	mnue/MnueX2K16PawnNetwork.cpp
@@ -73,6 +77,7 @@ DEP := $(OBJ:.o=.d)
 MODULE_OBJ_DIRS := \
 	$(OBJ_DIR)/board \
 	$(OBJ_DIR)/mnue \
+	$(OBJ_DIR)/search \
 	$(OBJ_DIR)/syzygy
 
 PORTABLE64_FLAGS := \
@@ -85,10 +90,30 @@ NATIVE64_FLAGS := \
 	-march=native \
 	-mtune=native
 
+AVX2_BMI2_FLAGS := \
+	-m64 \
+	-march=x86-64-v3 \
+	-mtune=generic \
+	-mbmi2
+
+AVX512_BMI2_FLAGS := \
+	-m64 \
+	-march=x86-64-v4 \
+	-mtune=generic \
+	-mbmi2
+
 ifeq ($(EFFECTIVE_PROFILE),portable64)
 	ARCH_FLAGS := $(PORTABLE64_FLAGS)
 	PROFILE_CPPFLAGS := -DMAGNUS_DISABLE_PEXT=1
 	FATHOM_PROFILE_FLAGS := -DTB_NO_HW_POP_COUNT=1
+else ifeq ($(EFFECTIVE_PROFILE),avx512+bmi2)
+	ARCH_FLAGS := $(AVX512_BMI2_FLAGS)
+	PROFILE_CPPFLAGS :=
+	FATHOM_PROFILE_FLAGS :=
+else ifeq ($(EFFECTIVE_PROFILE),avx2+bmi2)
+	ARCH_FLAGS := $(AVX2_BMI2_FLAGS)
+	PROFILE_CPPFLAGS :=
+	FATHOM_PROFILE_FLAGS :=
 else
 	ARCH_FLAGS := $(NATIVE64_FLAGS)
 	PROFILE_CPPFLAGS :=
@@ -252,7 +277,7 @@ else
 	PGO_BENCH_LOG_CMD = $(PGO_BENCH_LOG)
 endif
 
-.PHONY: all auto portable64 native64 variants detect build release releases \
+.PHONY: all auto portable64 native64 avx2+bmi2 avx512+bmi2 variants cpu-variants detect build release releases \
 	pgo profile-build pgo-step1 pgo-step2 pgo-step3 \
 	pgo-generate-build pgo-use-build run \
 	clean objclean pgo-clean distclean
@@ -266,7 +291,15 @@ portable64:
 native64:
 	@$(MAKE) --no-print-directory BUILD_PROFILE=native64 auto
 
+avx2+bmi2:
+	@$(MAKE) --no-print-directory BUILD_PROFILE=avx2+bmi2 auto
+
+avx512+bmi2:
+	@$(MAKE) --no-print-directory BUILD_PROFILE=avx512+bmi2 auto
+
 variants: portable64 native64
+
+cpu-variants: avx2+bmi2 avx512+bmi2
 
 detect:
 	@echo Compiler target : $(TARGET_TRIPLE)
@@ -393,10 +426,16 @@ clean:
 	$(call RM_F,$(BUILD_DIR)/$(TARGET)$(EXEEXT))
 	$(call RM_F,$(BUILD_DIR)/$(TARGET)-portable64$(EXEEXT))
 	$(call RM_F,$(BUILD_DIR)/$(TARGET)-native64$(EXEEXT))
+	$(call RM_F,$(BUILD_DIR)/$(TARGET)-avx2+bmi2$(EXEEXT))
+	$(call RM_F,$(BUILD_DIR)/$(TARGET)-avx512+bmi2$(EXEEXT))
 	$(call RM_F,$(BUILD_DIR)/$(TARGET)-portable64-profgen$(EXEEXT))
 	$(call RM_F,$(BUILD_DIR)/$(TARGET)-native64-profgen$(EXEEXT))
+	$(call RM_F,$(BUILD_DIR)/$(TARGET)-avx2+bmi2-profgen$(EXEEXT))
+	$(call RM_F,$(BUILD_DIR)/$(TARGET)-avx512+bmi2-profgen$(EXEEXT))
 	$(call RM_F,$(BUILD_DIR)/$(TARGET)-portable64-pgo$(EXEEXT))
 	$(call RM_F,$(BUILD_DIR)/$(TARGET)-native64-pgo$(EXEEXT))
+	$(call RM_F,$(BUILD_DIR)/$(TARGET)-avx2+bmi2-pgo$(EXEEXT))
+	$(call RM_F,$(BUILD_DIR)/$(TARGET)-avx512+bmi2-pgo$(EXEEXT))
 
 distclean: clean
 	$(call RMDIR_R,$(BUILD_DIR)/pgo)
