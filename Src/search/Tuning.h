@@ -115,6 +115,11 @@ inline int CORRECTION_HISTORY_WEIGHT_MAX = 96;
 inline int CORRECTION_POSITION_WEIGHT = 2;
 inline int CORRECTION_PAWN_WEIGHT = 2;
 inline int CORRECTION_MATERIAL_WEIGHT = 1;
+inline int CORRECTION_NONPAWN_WEIGHT = 0;
+inline int CORRECTION_MAJOR_WEIGHT = 0;
+inline int CORRECTION_MINOR_WEIGHT = 0;
+inline int CORRECTION_COUNTER_WEIGHT = 0;
+inline int CORRECTION_FOLLOWUP_WEIGHT = 0;
 
 inline int LMR_TABLE_LOG_SCALE_X128 = 2747;
 inline int QUIET_HISTORY_FP_DIVISOR = 12;
@@ -140,13 +145,22 @@ inline constexpr std::size_t SINGULAR_TELEMETRY_EXTENSION_LEVELS = 3;
                       : 0;
 }
 
-[[nodiscard]] inline int correction_weight_sum() noexcept {
-    return std::max(
-        1,
+[[nodiscard]] inline int correction_weight_sum(
+    bool has_counter,
+    bool has_followup
+) noexcept {
+    int sum =
         CORRECTION_POSITION_WEIGHT
-            + CORRECTION_PAWN_WEIGHT
-            + CORRECTION_MATERIAL_WEIGHT
-    );
+        + CORRECTION_PAWN_WEIGHT
+        + CORRECTION_MATERIAL_WEIGHT
+        + 2 * CORRECTION_NONPAWN_WEIGHT
+        + CORRECTION_MAJOR_WEIGHT
+        + CORRECTION_MINOR_WEIGHT;
+    if (has_counter)
+        sum += CORRECTION_COUNTER_WEIGHT;
+    if (has_followup)
+        sum += CORRECTION_FOLLOWUP_WEIGHT;
+    return std::max(1, sum);
 }
 
 [[nodiscard]] inline int singular_trust_threshold(std::size_t node_kind) noexcept {
@@ -245,6 +259,11 @@ struct IntParam {
         {"CorrectionPositionWeight", 2, 0, 8, 1, 1, &CORRECTION_POSITION_WEIGHT},
         {"CorrectionPawnWeight", 2, 0, 8, 1, 1, &CORRECTION_PAWN_WEIGHT},
         {"CorrectionMaterialWeight", 1, 0, 8, 1, 1, &CORRECTION_MATERIAL_WEIGHT},
+        {"CorrectionNonPawnWeight", 0, 0, 8, 1, 1, &CORRECTION_NONPAWN_WEIGHT},
+        {"CorrectionMajorWeight", 0, 0, 8, 1, 1, &CORRECTION_MAJOR_WEIGHT},
+        {"CorrectionMinorWeight", 0, 0, 8, 1, 1, &CORRECTION_MINOR_WEIGHT},
+        {"CorrectionCounterWeight", 0, 0, 8, 1, 1, &CORRECTION_COUNTER_WEIGHT},
+        {"CorrectionFollowupWeight", 0, 0, 8, 1, 1, &CORRECTION_FOLLOWUP_WEIGHT},
         {"LmrTableLogScaleX128", 2747, 512, 8192, 16, 64, &LMR_TABLE_LOG_SCALE_X128},
         {"QuietHistoryFpDivisor", 12, 1, 64, 1, 2, &QUIET_HISTORY_FP_DIVISOR},
         {"CaptureHistoryFpDivisor", 16, 1, 64, 1, 2, &CAPTURE_HISTORY_FP_DIVISOR},

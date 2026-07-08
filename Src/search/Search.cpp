@@ -714,9 +714,30 @@ counting, killer/history tables, PV storage, and stop-condition bookkeeping.
 */
 struct Searcher {
     struct CorrectionKeys {
-        Key position = 0;
-        Key pawn_king = 0;
-        Key material = 0;
+        std::size_t position = 0;
+        std::size_t pawn_king = 0;
+        std::size_t material = 0;
+        std::size_t nonpawn[COLOR_NB]{};
+        std::size_t major = 0;
+        std::size_t minor = 0;
+        std::size_t counter = 0;
+        std::size_t followup = 0;
+        bool has_counter = false;
+        bool has_followup = false;
+    };
+
+    static constexpr int CORRECTION_MOVE_HISTORY_SIZE =
+        PIECE_TYPE_NB * SQ_NB * SQ_NB;
+
+    struct CorrectionHistoryTables {
+        i16 position[COLOR_NB][CORRECTION_HISTORY_SIZE]{};
+        i16 pawn[COLOR_NB][CORRECTION_HISTORY_SIZE]{};
+        i16 material[COLOR_NB][CORRECTION_HISTORY_SIZE]{};
+        i16 nonpawn[COLOR_NB][COLOR_NB][CORRECTION_HISTORY_SIZE]{};
+        i16 major[COLOR_NB][CORRECTION_HISTORY_SIZE]{};
+        i16 minor[COLOR_NB][CORRECTION_HISTORY_SIZE]{};
+        i16 counter[COLOR_NB][CORRECTION_MOVE_HISTORY_SIZE]{};
+        i16 followup[COLOR_NB][CORRECTION_MOVE_HISTORY_SIZE]{};
     };
 
     struct StaticEvalInfo {
@@ -767,9 +788,7 @@ struct Searcher {
     SearchStackEntry search_stack[MAX_PLY + 2]{};
     int static_eval_stack[MAX_PLY + 1]{};
     bool static_eval_valid[MAX_PLY + 1]{};
-    i16 position_correction_history[COLOR_NB][CORRECTION_HISTORY_SIZE]{};
-    i16 pawn_correction_history[COLOR_NB][CORRECTION_HISTORY_SIZE]{};
-    i16 material_correction_history[COLOR_NB][CORRECTION_HISTORY_SIZE]{};
+    CorrectionHistoryTables correction_history{};
     clock::time_point start_time{};
     u64 limit_poll_mask = 1023ULL;
     bool stopped = false;
@@ -2106,27 +2125,123 @@ struct Searcher {
         return probe.hit && probe.data.eval != VALUE_NONE;
     }
 
-    [[nodiscard]] static inline std::size_t correction_index(Key key) noexcept {
+    [[nodiscard]] static inline std::size_t correction_hash_index(Key key) noexcept {
         return static_cast<std::size_t>(mix64(key)) & (CORRECTION_HISTORY_SIZE - 1);
     }
 
-    [[nodiscard]] CorrectionKeys correction_keys(const Position& pos) const noexcept {
-        CorrectionKeys keys{};
-        keys.position = pos.key;
-        keys.pawn_king =
-            pieces(pos, WHITE, PAWN)
+    [[nodiscard]] static inline std::size_t correction_move_index(
+        Move move,
+        PieceType piece
+    ) noexcept {
+        if (move_is_none(move) ||
+            move_is_capture(move) ||
+            move_is_promotion(move) ||
+            move_is_castle(move) ||
+            !is_ok(piece)) {
+            return 0;
+        }
+        return static_cast<std::size_t>(
+            (static_cast<unsigned>(piece) << 12)
+            | (static_cast<unsigned>(from_sq(move)) << 6)
+            | static_cast<unsigned>(to_sq(move))
+        );
+    }
+
+    [[nodiscard]] static inline Key correction_pawn_king_key(
+        const Position& pos
+    ) noexcept {
+        return pieces(pos, WHITE, PAWN)
             ^ std::rotl(pieces(pos, BLACK, PAWN), 7)
             ^ std::rotl(pieces(pos, WHITE, KING), 19)
             ^ std::rotl(pieces(pos, BLACK, KING), 29);
-        keys.material = packed_material_signature(pos);
+    }
+
+    [[nodiscard]] static inline Key correction_nonpawn_key(
+        const Position& pos,
+        Color color
+    ) noexcept {
+        return pieces(pos, color, KNIGHT)
+            ^ std::rotl(pieces(pos, color, BISHOP), 11)
+            ^ std::rotl(pieces(pos, color, ROOK), 23)
+            ^ std::rotl(pieces(pos, color, QUEEN), 37)
+            ^ std::rotl(pieces(pos, color, KING), 47);
+    }
+
+    [[nodiscard]] static inline Key correction_major_key(
+        const Position& pos
+    ) noexcept {
+        return pieces(pos, WHITE, ROOK)
+            ^ std::rotl(pieces(pos, WHITE, QUEEN), 11)
+            ^ std::rotl(pieces(pos, BLACK, ROOK), 23)
+            ^ std::rotl(pieces(pos, BLACK, QUEEN), 37);
+    }
+
+    [[nodiscard]] static inline Key correction_minor_key(
+        const Position& pos
+    ) noexcept {
+        return pieces(pos, WHITE, KNIGHT)
+            ^ std::rotl(pieces(pos, WHITE, BISHOP), 11)
+            ^ std::rotl(pieces(pos, BLACK, KNIGHT), 23)
+            ^ std::rotl(pieces(pos, BLACK, BISHOP), 37);
+    }
+
+    [[nodiscard]] CorrectionKeys correction_keys(
+        const Position& pos,
+        int ply
+    ) const noexcept {
+        CorrectionKeys keys{};
+        keys.position = correction_hash_index(pos.key);
+        keys.pawn_king = correction_hash_index(correction_pawn_king_key(pos));
+        keys.material = correction_hash_index(packed_material_signature(pos));
+        if (CORRECTION_NONPAWN_WEIGHT > 0) {
+            keys.nonpawn[WHITE] = correction_hash_index(
+                correction_nonpawn_key(pos, WHITE)
+            );
+            keys.nonpawn[BLACK] = correction_hash_index(
+                correction_nonpawn_key(pos, BLACK)
+            );
+        }
+        if (CORRECTION_MAJOR_WEIGHT > 0)
+            keys.major = correction_hash_index(correction_major_key(pos));
+        if (CORRECTION_MINOR_WEIGHT > 0)
+            keys.minor = correction_hash_index(correction_minor_key(pos));
+        if (CORRECTION_COUNTER_WEIGHT > 0 && ply > 0) {
+            const Move move = move_stack[ply - 1];
+            const PieceType piece = search_stack[ply - 1].continuation.piece;
+            if (!move_is_none(move) && is_ok(piece)) {
+                const std::size_t index = correction_move_index(move, piece);
+                if (index != 0) {
+                    keys.counter = index;
+                    keys.has_counter = true;
+                }
+            }
+        }
+        if (CORRECTION_FOLLOWUP_WEIGHT > 0 && ply > 1) {
+            const Move move = move_stack[ply - 2];
+            const PieceType piece = search_stack[ply - 2].continuation.piece;
+            if (!move_is_none(move) && is_ok(piece)) {
+                const std::size_t index = correction_move_index(move, piece);
+                if (index != 0) {
+                    keys.followup = index;
+                    keys.has_followup = true;
+                }
+            }
+        }
         return keys;
     }
 
     [[nodiscard]] static inline int correction_slot_value(
         const i16 table[CORRECTION_HISTORY_SIZE],
-        Key key
+        std::size_t index
     ) noexcept {
-        return static_cast<int>(table[correction_index(key)]);
+        return static_cast<int>(table[index]);
+    }
+
+    [[nodiscard]] static inline int correction_move_slot_value(
+        const i16 table[CORRECTION_MOVE_HISTORY_SIZE],
+        std::size_t index
+    ) noexcept {
+        return static_cast<int>(table[index]);
     }
 
     inline void update_correction_slot(
@@ -2144,19 +2259,56 @@ struct Searcher {
         ));
     }
 
+    inline void update_correction_slot_if_enabled(
+        i16& slot,
+        int target,
+        int update_weight,
+        int history_weight
+    ) noexcept {
+        if (history_weight <= 0)
+            return;
+        update_correction_slot(slot, target, update_weight);
+    }
+
     [[nodiscard]] inline int correction_value(
         Color side,
         const CorrectionKeys& keys
     ) const noexcept {
-        const int stored =
+        const CorrectionHistoryTables& hist = correction_history;
+        int stored =
             CORRECTION_POSITION_WEIGHT
-                * correction_slot_value(position_correction_history[side], keys.position)
+                * correction_slot_value(hist.position[side], keys.position)
             + CORRECTION_PAWN_WEIGHT
-                * correction_slot_value(pawn_correction_history[side], keys.pawn_king)
+                * correction_slot_value(hist.pawn[side], keys.pawn_king)
             + CORRECTION_MATERIAL_WEIGHT
-                * correction_slot_value(material_correction_history[side], keys.material);
+                * correction_slot_value(hist.material[side], keys.material);
+        if (CORRECTION_NONPAWN_WEIGHT > 0) {
+            stored += CORRECTION_NONPAWN_WEIGHT
+                * correction_slot_value(hist.nonpawn[side][WHITE], keys.nonpawn[WHITE]);
+            stored += CORRECTION_NONPAWN_WEIGHT
+                * correction_slot_value(hist.nonpawn[side][BLACK], keys.nonpawn[BLACK]);
+        }
+        if (CORRECTION_MAJOR_WEIGHT > 0) {
+            stored += CORRECTION_MAJOR_WEIGHT
+                * correction_slot_value(hist.major[side], keys.major);
+        }
+        if (CORRECTION_MINOR_WEIGHT > 0) {
+            stored += CORRECTION_MINOR_WEIGHT
+                * correction_slot_value(hist.minor[side], keys.minor);
+        }
+        if (keys.has_counter) {
+            stored += CORRECTION_COUNTER_WEIGHT
+                * correction_move_slot_value(hist.counter[side], keys.counter);
+        }
+        if (keys.has_followup) {
+            stored += CORRECTION_FOLLOWUP_WEIGHT
+                * correction_move_slot_value(hist.followup[side], keys.followup);
+        }
         return std::clamp(
-            stored / (CORRECTION_HISTORY_GRAIN * correction_weight_sum()),
+            stored / (
+                CORRECTION_HISTORY_GRAIN
+                * correction_weight_sum(keys.has_counter, keys.has_followup)
+            ),
             -CORRECTION_HISTORY_CLAMP,
             CORRECTION_HISTORY_CLAMP
         );
@@ -2182,21 +2334,65 @@ struct Searcher {
             CORRECTION_HISTORY_WEIGHT_MAX,
             16 + std::max(1, depth) * 8
         );
-        update_correction_slot(
-            position_correction_history[side][correction_index(keys.position)],
+        CorrectionHistoryTables& hist = correction_history;
+        update_correction_slot_if_enabled(
+            hist.position[side][keys.position],
             target,
-            weight
+            weight,
+            CORRECTION_POSITION_WEIGHT
         );
-        update_correction_slot(
-            pawn_correction_history[side][correction_index(keys.pawn_king)],
+        update_correction_slot_if_enabled(
+            hist.pawn[side][keys.pawn_king],
             target,
-            weight
+            weight,
+            CORRECTION_PAWN_WEIGHT
         );
-        update_correction_slot(
-            material_correction_history[side][correction_index(keys.material)],
+        update_correction_slot_if_enabled(
+            hist.material[side][keys.material],
             target,
-            weight
+            weight,
+            CORRECTION_MATERIAL_WEIGHT
         );
+        update_correction_slot_if_enabled(
+            hist.nonpawn[side][WHITE][keys.nonpawn[WHITE]],
+            target,
+            weight,
+            CORRECTION_NONPAWN_WEIGHT
+        );
+        update_correction_slot_if_enabled(
+            hist.nonpawn[side][BLACK][keys.nonpawn[BLACK]],
+            target,
+            weight,
+            CORRECTION_NONPAWN_WEIGHT
+        );
+        update_correction_slot_if_enabled(
+            hist.major[side][keys.major],
+            target,
+            weight,
+            CORRECTION_MAJOR_WEIGHT
+        );
+        update_correction_slot_if_enabled(
+            hist.minor[side][keys.minor],
+            target,
+            weight,
+            CORRECTION_MINOR_WEIGHT
+        );
+        if (keys.has_counter) {
+            update_correction_slot_if_enabled(
+                hist.counter[side][keys.counter],
+                target,
+                weight,
+                CORRECTION_COUNTER_WEIGHT
+            );
+        }
+        if (keys.has_followup) {
+            update_correction_slot_if_enabled(
+                hist.followup[side][keys.followup],
+                target,
+                weight,
+                CORRECTION_FOLLOWUP_WEIGHT
+            );
+        }
     }
 
     inline void store_static_eval(int ply, int static_eval) noexcept {
@@ -2477,7 +2673,8 @@ struct Searcher {
         bool qsearch_node
     ) const noexcept {
         StaticEvalInfo info{};
-        info.keys = correction_keys(pos);
+        if (limits.components.correction_history)
+            info.keys = correction_keys(pos, ply);
         const Color side = static_cast<Color>(pos.side_to_move);
         if (tt_raw_eval_available(probe)) {
             info.raw = probe.data.eval;
