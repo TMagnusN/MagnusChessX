@@ -141,7 +141,9 @@ static_assert(rule50_bucket(66) == 7);
 static_assert(rule50_bucket(200) == 15);
 
 [[nodiscard]] inline Key tt_key(const Position& pos, const Tables& tables) noexcept {
-    return pos.key ^ tables.zobrist.rule50[rule50_bucket(pos.halfmove_clock)];
+    return pos.halfmove_clock < 50
+        ? pos.key
+        : pos.key ^ tables.zobrist.rule50[rule50_bucket(pos.halfmove_clock)];
 }
 
 void tt_prefetch(const TT& tt, Key key) noexcept;

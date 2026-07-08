@@ -360,7 +360,9 @@ inline void tables_init_zobrist(ZobristTables& z, u64 seed = 0xC0FFEE1234567890U
 
     z.side = splitmix64(x);
 
-    for (int i = 0; i < 16; ++i)
+    (void)splitmix64(x);
+    z.rule50[0] = 0;
+    for (int i = 1; i < 16; ++i)
         z.rule50[i] = splitmix64(x);
 }
 

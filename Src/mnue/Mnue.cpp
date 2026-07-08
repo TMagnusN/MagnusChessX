@@ -63,13 +63,13 @@ constexpr int kScale = 400;
 constexpr int kClip = 255;
 constexpr int kMnueMaterialMax = 78;
 constexpr int kMnueCpMaxRaw = 32768;
-// Keep opening scores conservative: typical start-position search values of
-// 35-45 MNUE raw units should display near 20-30 cp.
-constexpr double kMnueCpBase = 144.0;
-constexpr double kMnueCpMaterial = 16.0;
-constexpr double kMnueCpEndgameDiscount = 8.0;
-constexpr double kMnueCpMinDenominator = 128.0;
-constexpr double kMnueCpMaxDenominator = 168.0;
+// Display calibration only: search/eval use raw scores, while UCI cp should
+// report ordinary opening advantages around the expected pawn-unit scale.
+constexpr double kMnueCpBase = 104.0;
+constexpr double kMnueCpMaterial = 12.0;
+constexpr double kMnueCpEndgameDiscount = 6.0;
+constexpr double kMnueCpMinDenominator = 96.0;
+constexpr double kMnueCpMaxDenominator = 128.0;
 
 constexpr int kSearchMaterialScaleBase = 856;
 constexpr int kSearchMaterialScaleRange = 279;
@@ -118,8 +118,10 @@ struct Network {
 
     // w1[bucket][perspective][hidden], perspective 0 = stm/us, 1 = nstm/them.
     std::vector<i16> w1;
+    std::vector<std::int8_t> w1_i8;
     std::vector<i16> b1;
     int w1_max_abs = 0;
+    bool forward_vnni_safe = false;
     bool forward_madd_safe = false;
     bool forward_i32_safe = false;
 
@@ -225,8 +227,10 @@ void clear_network(Network<Layout>& net) noexcept {
     net.w0.clear();
     net.b0.clear();
     net.w1.clear();
+    net.w1_i8.clear();
     net.b1.clear();
     net.w1_max_abs = 0;
+    net.forward_vnni_safe = false;
     net.forward_madd_safe = false;
     net.forward_i32_safe = false;
 }
@@ -252,14 +256,26 @@ template<class Layout>
 template<class Layout>
 void refresh_network_traits(Network<Layout>& net) noexcept {
     int max_abs = 0;
+    bool w1_i8_safe = true;
     for (const i16 w : net.w1) {
         const int abs_w = w < 0 ? -static_cast<int>(w) : static_cast<int>(w);
         max_abs = std::max(max_abs, abs_w);
+        if (w < -128 || w > 127)
+            w1_i8_safe = false;
     }
 
     net.w1_max_abs = max_abs;
+    net.forward_vnni_safe = w1_i8_safe;
     net.forward_madd_safe = max_abs <= 128;
     net.forward_i32_safe = max_abs <= max_safe_i32_w1_abs<Layout>();
+
+    if (w1_i8_safe) {
+        net.w1_i8.resize(net.w1.size());
+        for (std::size_t i = 0; i < net.w1.size(); ++i)
+            net.w1_i8[i] = static_cast<std::int8_t>(net.w1[i]);
+    } else {
+        net.w1_i8.clear();
+    }
 }
 
 template<class Layout>
@@ -1200,6 +1216,100 @@ inline __m512i add_i32x16_to_i64_avx512(__m512i sum, __m512i v) noexcept {
     return _mm256_cvtepi32_epi64(v);
 }
 
+#if defined(__AVXVNNI__) \
+    && !(defined(__AVX512F__) && defined(__AVX512BW__))
+inline void screlu_square_bytes_avx2(
+    __m256i raw0,
+    __m256i raw1,
+    __m256i& lo8,
+    __m256i& hi8
+) noexcept {
+    const __m256i zero16 = _mm256_setzero_si256();
+    const __m256i clip16 = _mm256_set1_epi16(static_cast<i16>(kClip));
+    const __m256i low_byte_mask = _mm256_set1_epi16(static_cast<i16>(0x00FF));
+
+    const __m256i clipped0 = _mm256_min_epi16(
+        _mm256_max_epi16(raw0, zero16),
+        clip16
+    );
+    const __m256i clipped1 = _mm256_min_epi16(
+        _mm256_max_epi16(raw1, zero16),
+        clip16
+    );
+
+    const __m256i sq0 = _mm256_mullo_epi16(clipped0, clipped0);
+    const __m256i sq1 = _mm256_mullo_epi16(clipped1, clipped1);
+
+    lo8 = _mm256_packus_epi16(
+        _mm256_and_si256(sq0, low_byte_mask),
+        _mm256_and_si256(sq1, low_byte_mask)
+    );
+    hi8 = _mm256_packus_epi16(
+        _mm256_srli_epi16(sq0, 8),
+        _mm256_srli_epi16(sq1, 8)
+    );
+
+    lo8 = _mm256_permute4x64_epi64(lo8, 0xD8);
+    hi8 = _mm256_permute4x64_epi64(hi8, 0xD8);
+}
+
+[[nodiscard]] i64 dot_pair_screlu_i8_vnni_avx2(
+    const i16* acc0,
+    const std::int8_t* weights0,
+    const i16* acc1,
+    const std::int8_t* weights1,
+    int count
+) noexcept {
+    __m256i sum_lo_32 = _mm256_setzero_si256();
+    __m256i sum_hi_32 = _mm256_setzero_si256();
+
+    int i = 0;
+    for (; i + 31 < count; i += 32) {
+        const __m256i acc0_raw0 = _mm256_loadu_si256(
+            reinterpret_cast<const __m256i*>(acc0 + i)
+        );
+        const __m256i acc0_raw1 = _mm256_loadu_si256(
+            reinterpret_cast<const __m256i*>(acc0 + i + 16)
+        );
+        const __m256i acc1_raw0 = _mm256_loadu_si256(
+            reinterpret_cast<const __m256i*>(acc1 + i)
+        );
+        const __m256i acc1_raw1 = _mm256_loadu_si256(
+            reinterpret_cast<const __m256i*>(acc1 + i + 16)
+        );
+
+        __m256i lo8 = _mm256_setzero_si256();
+        __m256i hi8 = _mm256_setzero_si256();
+        screlu_square_bytes_avx2(acc0_raw0, acc0_raw1, lo8, hi8);
+
+        const __m256i w0 = _mm256_loadu_si256(
+            reinterpret_cast<const __m256i*>(weights0 + i)
+        );
+        sum_lo_32 = _mm256_dpbusd_epi32(sum_lo_32, lo8, w0);
+        sum_hi_32 = _mm256_dpbusd_epi32(sum_hi_32, hi8, w0);
+
+        screlu_square_bytes_avx2(acc1_raw0, acc1_raw1, lo8, hi8);
+
+        const __m256i w1 = _mm256_loadu_si256(
+            reinterpret_cast<const __m256i*>(weights1 + i)
+        );
+        sum_lo_32 = _mm256_dpbusd_epi32(sum_lo_32, lo8, w1);
+        sum_hi_32 = _mm256_dpbusd_epi32(sum_hi_32, hi8, w1);
+    }
+
+    i64 total = horizontal_sum_epi32_to_i64_avx2(sum_lo_32)
+        + 256LL * horizontal_sum_epi32_to_i64_avx2(sum_hi_32);
+    for (; i < count; ++i) {
+        total += static_cast<i64>(screlu(acc0[i]))
+            * static_cast<i64>(weights0[i]);
+        total += static_cast<i64>(screlu(acc1[i]))
+            * static_cast<i64>(weights1[i]);
+    }
+
+    return total;
+}
+#endif
+
 [[nodiscard]] i64 dot_pair_screlu_i16_madd_avx2(
     const i16* acc0,
     const i16* weights0,
@@ -1446,7 +1556,22 @@ template<class Layout>
         output += dot_screlu_i16_avx512(nstm_acc.data(), w_nstm, Layout::HiddenSize);
     }
 #elif defined(__AVX2__)
+#if defined(__AVXVNNI__) \
+    && !(defined(__AVX512F__) && defined(__AVX512BW__))
+    if (net.forward_vnni_safe && net.w1_i8.size() == net.w1.size()) {
+        const std::int8_t* w_stm_i8 = net.w1_i8.data() + base;
+        const std::int8_t* w_nstm_i8 = w_stm_i8 + Layout::HiddenSize;
+        output += dot_pair_screlu_i8_vnni_avx2(
+            stm_acc.data(),
+            w_stm_i8,
+            nstm_acc.data(),
+            w_nstm_i8,
+            Layout::HiddenSize
+        );
+    } else if (net.forward_madd_safe) {
+#else
     if (net.forward_madd_safe) {
+#endif
         output += dot_pair_screlu_i16_madd_avx2(
             stm_acc.data(),
             w_stm,
@@ -2081,7 +2206,29 @@ const std::string& last_error() noexcept {
     return g_error;
 }
 
+[[nodiscard]] bool p2_vnni_forward_enabled() noexcept {
+    switch (g_p2_active) {
+        case P2ActiveKind::P2:
+            return g_p2.loaded && g_p2.valid() && g_p2.forward_vnni_safe
+                && g_p2.w1_i8.size() == g_p2.w1.size();
+        case P2ActiveKind::P2K32:
+            return g_p2k32.loaded && g_p2k32.valid() && g_p2k32.forward_vnni_safe
+                && g_p2k32.w1_i8.size() == g_p2k32.w1.size();
+        case P2ActiveKind::P2Pro:
+            return g_p2pro.loaded && g_p2pro.valid() && g_p2pro.forward_vnni_safe
+                && g_p2pro.w1_i8.size() == g_p2pro.w1.size();
+        case P2ActiveKind::None:
+            return false;
+    }
+    return false;
+}
+
 const char* eval_simd_name() noexcept {
+#if defined(__AVXVNNI__) \
+    && !(defined(__AVX512F__) && defined(__AVX512BW__))
+    if (p2_vnni_forward_enabled())
+        return "AVX-VNNI-SCRELU-exact";
+#endif
 #if defined(__AVX512F__) && defined(__AVX512BW__)
     return "AVX-512BW";
 #elif defined(__AVX2__)

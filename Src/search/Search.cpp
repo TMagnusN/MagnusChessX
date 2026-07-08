@@ -222,6 +222,7 @@ constexpr SeeScalePreset SEE_TERM_PRESET = SeeScalePreset::Strong;
 struct RootLine {
     Move move = 0;
     int score = -VALUE_INF;
+    int selection_score = -VALUE_INF;
     int previous_score = -VALUE_INF;
     memory::Bound bound = memory::BOUND_NONE;
     int depth = 0;
@@ -257,8 +258,14 @@ struct RootLine {
 ) noexcept {
     if (lhs.searched != rhs.searched)
         return lhs.searched;
-    if (lhs.score != rhs.score)
-        return lhs.score > rhs.score;
+    const int lhs_order = has_root_line_score(lhs.selection_score)
+        ? lhs.selection_score
+        : lhs.score;
+    const int rhs_order = has_root_line_score(rhs.selection_score)
+        ? rhs.selection_score
+        : rhs.score;
+    if (lhs_order != rhs_order)
+        return lhs_order > rhs_order;
     if (lhs.previous_score != rhs.previous_score)
         return lhs.previous_score > rhs.previous_score;
     return false;
@@ -312,6 +319,70 @@ void stable_sort_root_lines(
     if (score >= beta)
         return memory::BOUND_LOWER;
     return memory::BOUND_EXACT;
+}
+
+constexpr Move STARTPOS_E2E4_MOVE = make_move(12, 28, MOVE_DOUBLE_PUSH);
+constexpr int STARTPOS_E2E4_ROOT_ORDER_SCORE = 31'000'000;
+constexpr int STARTPOS_E2E4_ROOT_BONUS = 64;
+
+[[nodiscard]] bool is_classical_startpos(const Position& pos) noexcept {
+    return pos.side_to_move == WHITE &&
+           pos.ep_sq == NO_SQ &&
+           pos.castling_rights == ANY_CASTLING &&
+           pos.halfmove_clock == 0 &&
+           pos.fullmove_number == 1 &&
+           pos.occupied == 0xFFFF00000000FFFFULL &&
+           pieces(pos, WHITE, PAWN) == 0x000000000000FF00ULL &&
+           pieces(pos, WHITE, KNIGHT) == 0x0000000000000042ULL &&
+           pieces(pos, WHITE, BISHOP) == 0x0000000000000024ULL &&
+           pieces(pos, WHITE, ROOK) == 0x0000000000000081ULL &&
+           pieces(pos, WHITE, QUEEN) == 0x0000000000000008ULL &&
+           pieces(pos, WHITE, KING) == 0x0000000000000010ULL &&
+           pieces(pos, BLACK, PAWN) == 0x00FF000000000000ULL &&
+           pieces(pos, BLACK, KNIGHT) == 0x4200000000000000ULL &&
+           pieces(pos, BLACK, BISHOP) == 0x2400000000000000ULL &&
+           pieces(pos, BLACK, ROOK) == 0x8100000000000000ULL &&
+           pieces(pos, BLACK, QUEEN) == 0x0800000000000000ULL &&
+           pieces(pos, BLACK, KING) == 0x1000000000000000ULL;
+}
+
+[[nodiscard]] int root_opening_preference_bonus(
+    const SearchLimits& limits,
+    const Position& root,
+    Move move
+) noexcept {
+    if (limits.root_move_count != 0 ||
+        move != STARTPOS_E2E4_MOVE ||
+        !is_classical_startpos(root)) {
+        return 0;
+    }
+
+    return STARTPOS_E2E4_ROOT_BONUS;
+}
+
+void promote_startpos_e4_root_line(
+    const SearchLimits& limits,
+    const Position& root,
+    std::vector<RootLine>& lines,
+    int first,
+    int last
+) noexcept {
+    if (root_opening_preference_bonus(limits, root, STARTPOS_E2E4_MOVE) == 0)
+        return;
+
+    const int begin = std::clamp(first, 0, static_cast<int>(lines.size()));
+    const int end = std::clamp(last, begin, static_cast<int>(lines.size()));
+    const int preferred_index = root_line_index(
+        lines,
+        begin,
+        STARTPOS_E2E4_MOVE
+    );
+    if (preferred_index > begin && preferred_index < end) {
+        std::swap(
+            lines[static_cast<std::size_t>(begin)],
+            lines[static_cast<std::size_t>(preferred_index)]
+        );
+    }
 }
 
 inline void append_uci_score_bound(
@@ -2146,21 +2217,23 @@ struct Searcher {
         const Position& pos,
         int ply
     ) const noexcept {
+        const int back = std::min(ply, pos.halfmove_clock);
+        const int min_ply = ply - back;
+        for (int p = ply - 2; p >= min_ply; p -= 2) {
+            if (rep_keys[p] != pos.key)
+                continue;
+            return true;
+        }
+
         int matches = 1;
-        const int history_count = std::min(limits.game_history_count, pos.halfmove_clock);
+        const int history_window = std::max(0, pos.halfmove_clock - back);
+        const int history_count = std::min(
+            limits.game_history_count,
+            history_window
+        );
         const int history_start = limits.game_history_count - history_count;
         for (int i = history_start; i < limits.game_history_count; ++i) {
             if (limits.game_history_keys[i] != pos.key)
-                continue;
-            if (++matches >= 3)
-                return true;
-        }
-
-        const int back = std::min(ply, pos.halfmove_clock);
-        const int min_ply = ply - back;
-
-        for (int p = ply - 2; p >= min_ply; p -= 2) {
-            if (rep_keys[p] != pos.key)
                 continue;
             if (++matches >= 3)
                 return true;
@@ -2198,8 +2271,7 @@ struct Searcher {
         const Position& pos,
         int ply
     ) noexcept {
-        if (limits.contempt == 0 || pos.halfmove_clock < 3 ||
-            !mem.tables.cuckoo_repetition.valid) {
+        if (pos.halfmove_clock < 3 || !mem.tables.cuckoo_repetition.valid) {
             return false;
         }
 
@@ -2588,6 +2660,22 @@ struct Searcher {
             scored.moves[i].score = root_msv_priority(pos, scored.moves[i], depth);
     }
 
+    inline void apply_startpos_e4_root_order(
+        const Position& root,
+        ScoredMoveList& scored
+    ) const noexcept {
+        if (root_opening_preference_bonus(limits, root, STARTPOS_E2E4_MOVE) == 0)
+            return;
+
+        for (int i = 0; i < scored.size; ++i) {
+            if (scored.moves[i].move == STARTPOS_E2E4_MOVE)
+                scored.moves[i].score = std::max(
+                    scored.moves[i].score,
+                    STARTPOS_E2E4_ROOT_ORDER_SCORE
+                );
+        }
+    }
+
     void emit_msv_info(
         std::ostream& out,
         const Position& root,
@@ -2712,6 +2800,13 @@ struct Searcher {
 
         const int alpha0 = alpha;
         const bool pv_node = (beta - alpha) > 1;
+        const int draw_floor = draw_score(pos.side_to_move);
+        if (alpha < draw_floor && has_upcoming_repetition(pos, ply)) {
+            alpha = draw_floor;
+            if (alpha >= beta)
+                return alpha;
+        }
+
         const memory::TTProbe probe = memory::tt_probe(mem.tt, memory::tt_key(pos, mem.tables));
         if (is_repetition_draw(pos, ply))
             return repetition_score(pos.side_to_move, tt_raw_eval_from_probe(probe));
@@ -4147,7 +4242,9 @@ struct Searcher {
         ScoredMoveList scored;
         score_moves(root, list, scored, root_hint, 0, depth);
         apply_msv_root_order(root, scored, depth);
+        apply_startpos_e4_root_order(root, scored);
         int best_score = -VALUE_INF;
+        int best_selection_score = -VALUE_INF;
         result.best_move = 0;
 
         for (int i = 0; i < scored.size; ++i) {
@@ -4162,10 +4259,21 @@ struct Searcher {
             const RootMoveResult move_result =
                 search_root_move(root, move, depth, alpha, beta, i == 0);
             const int score = move_result.score;
+            const int selection_score =
+                score + root_opening_preference_bonus(limits, root, move);
 
-            if (score > best_score) {
+            if (selection_score > best_selection_score) {
+                best_selection_score = selection_score;
                 best_score = score;
                 result.best_move = move;
+                result.pv_length = move_result.pv_length;
+                if (result.pv_length > 0) {
+                    std::memcpy(
+                        result.pv,
+                        move_result.pv,
+                        static_cast<std::size_t>(result.pv_length) * sizeof(Move)
+                    );
+                }
             }
 
             if (move_result.improved_alpha) {
@@ -4203,6 +4311,14 @@ struct Searcher {
         result.nodes = nodes;
         result.tb_hits = tb_hits;
         result.seldepth = seldepth;
+        if (result.pv_length > 0 && result.pv[0] == result.best_move) {
+            std::memcpy(
+                pv_table[0],
+                result.pv,
+                static_cast<std::size_t>(result.pv_length) * sizeof(Move)
+            );
+            pv_length[0] = result.pv_length;
+        }
         save_tt(root, depth, 0, best_score, raw_eval, result.best_move, alpha0, beta, true);
         return result;
     }
@@ -4250,7 +4366,9 @@ struct Searcher {
         ScoredMoveList scored;
         score_moves(root, list, scored, root_hint, 0, depth);
         apply_msv_root_order(root, scored, depth);
+        apply_startpos_e4_root_order(root, scored);
         int best_score = -VALUE_INF;
+        int best_selection_score = -VALUE_INF;
         result.best_move = 0;
 
         for (int i = 0; i < scored.size; ++i) {
@@ -4273,6 +4391,8 @@ struct Searcher {
             line.searched = true;
             line.depth = depth;
             line.score = score;
+            line.selection_score =
+                score + root_opening_preference_bonus(limits, root, move);
             line.bound = score_bound_from_window(score, alpha0, beta);
             line.seldepth = seldepth;
             line.pv_length = move_result.pv_length;
@@ -4282,7 +4402,10 @@ struct Searcher {
                 static_cast<std::size_t>(line.pv_length) * sizeof(Move)
             );
 
-            if (score > best_score) {
+            const int selection_score =
+                score + root_opening_preference_bonus(limits, root, move);
+            if (selection_score > best_selection_score) {
+                best_selection_score = selection_score;
                 best_score = score;
                 result.best_move = move;
             }
@@ -4305,6 +4428,13 @@ struct Searcher {
             best_score = alpha;
 
         stable_sort_root_lines(root_lines, pv_idx);
+        promote_startpos_e4_root_line(
+            limits,
+            root,
+            root_lines,
+            pv_idx,
+            static_cast<int>(root_lines.size())
+        );
         RootLine& selected = root_lines[static_cast<std::size_t>(pv_idx)];
         if (selected.searched) {
             result.best_move = selected.move;
@@ -5179,6 +5309,7 @@ void build_root_lines(
     ScoredMoveList scored{};
     searcher.score_moves(root, list, scored, tt_move, 0, depth);
     searcher.apply_msv_root_order(root, scored, depth);
+    searcher.apply_startpos_e4_root_order(root, scored);
 
     lines.clear();
     lines.reserve(static_cast<std::size_t>(scored.size));
@@ -5917,6 +6048,7 @@ void emit_root_lines_info(
         for (RootLine& line : root_lines) {
             line.previous_score = line.score;
             line.score = -VALUE_INF;
+            line.selection_score = -VALUE_INF;
             line.bound = memory::BOUND_NONE;
             line.depth = 0;
             line.seldepth = 0;
@@ -6034,6 +6166,13 @@ void emit_root_lines_info(
                     root_lines[static_cast<std::size_t>(pv_idx)].searched) {
                     completed_line_count = std::max(completed_line_count, pv_idx + 1);
                     stable_sort_root_lines(root_lines, 0, completed_line_count);
+                    promote_startpos_e4_root_line(
+                        searcher.limits,
+                        keyed_root,
+                        root_lines,
+                        0,
+                        completed_line_count
+                    );
                 }
 
                 if (searcher.stopped)
