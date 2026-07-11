@@ -25,6 +25,7 @@ SOFTWARE.
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <iosfwd>
 #include <string>
@@ -102,6 +103,13 @@ struct RootMsvEntry {
 };
 
 struct RootMsvShared;
+struct SearchTimeSignals;
+
+struct TimeManagementState {
+    Score previous_score = VALUE_NONE;
+    Score previous_average_score = VALUE_NONE;
+    double previous_time_reduction = 0.85;
+};
 
 enum class SearchEvalKind : std::uint8_t {
     None,
@@ -239,7 +247,7 @@ struct SearchComponents {
  * 多線程支援：
  *   shared_nodes  — 跨線程共享的節點計數器（Lazy SMP 用）
  *   stop / external_stop — 合作式停止信號（原子布林）
- *   pondering / ponder_time_offset_ms — 沉思模式時間追蹤
+ *   pondering — 沉思模式狀態；成功 ponder 的耗時保留在同一搜尋時鐘中
  *   thread_id / thread_count — 線程標識與總數
  */
 struct SearchLimits {
@@ -283,10 +291,12 @@ struct SearchLimits {
     std::atomic<bool>* stop = nullptr;                      // 本線程的停止信號
     const std::atomic<bool>* external_stop = nullptr;       // 外部停止信號（跨線程）
     const std::atomic<bool>* pondering = nullptr;           // 沉思模式啟用標誌
-    const std::atomic<int>* ponder_time_offset_ms = nullptr;// 沉思時間偏移量
     std::atomic<u64>* shared_nodes = nullptr;               // 共享節點計數器
     std::atomic<u64>* shared_tb_hits = nullptr;             // 共享 Syzygy 命中計數器
     RootMsvShared* root_msv = nullptr;                      // MSV-SMP root-local credit table
+    SearchTimeSignals* time_signals = nullptr;              // Lazy-SMP 動態時間訊號
+    TimeManagementState* time_state = nullptr;              // 跨著時間管理歷史（僅主控提交）
+    std::chrono::steady_clock::time_point start_time{};     // UCI 收到 go 後的搜尋起點
 
     // --- 線程資訊 ---
     int thread_id = 0;                  // 本線程的 ID（0 = 主線程）

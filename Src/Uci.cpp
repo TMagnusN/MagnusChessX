@@ -433,12 +433,6 @@ void display_position(const Position& pos, std::ostream& out) {
     return line.size() > command.size() ? line.substr(command.size() + 1) : std::string_view{};
 }
 
-[[nodiscard]] inline long long steady_now_ms() noexcept {
-    return std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::steady_clock::now().time_since_epoch()
-    ).count();
-}
-
 [[nodiscard]] bool parse_u64(std::string_view sv, u64& value) noexcept {
     const char* first = sv.data();
     const char* last = sv.data() + sv.size();
@@ -905,9 +899,6 @@ struct UciSession {
     std::atomic<bool> search_running{false};
     std::atomic<bool> ponder_search{false};
     std::atomic<bool> pondering{false};
-    std::atomic<bool> ponder_hit_received{false};
-    std::atomic<int> ponder_time_offset_ms{0};
-    std::atomic<long long> search_start_ms{0};
     std::thread search_thread;
 
     UciSession() {
@@ -968,9 +959,6 @@ struct UciSession {
             search_thread.join();
         ponder_search.store(false, std::memory_order_release);
         pondering.store(false, std::memory_order_release);
-        ponder_hit_received.store(false, std::memory_order_release);
-        ponder_time_offset_ms.store(0, std::memory_order_release);
-        search_start_ms.store(0, std::memory_order_release);
         search_running.store(false, std::memory_order_release);
     }
 
@@ -981,15 +969,6 @@ struct UciSession {
             return;
         }
 
-        const long long start_ms = search_start_ms.load(std::memory_order_acquire);
-        const long long now_ms = steady_now_ms();
-        const long long elapsed = start_ms > 0 ? std::max(0LL, now_ms - start_ms) : 0LL;
-        const int offset_ms = static_cast<int>(
-            std::min<long long>(elapsed, std::numeric_limits<int>::max())
-        );
-
-        ponder_time_offset_ms.store(offset_ms, std::memory_order_release);
-        ponder_hit_received.store(true, std::memory_order_release);
         pondering.store(false, std::memory_order_release);
     }
 
@@ -1494,6 +1473,7 @@ struct UciSession {
     }
 
     void handle_go(std::string_view line, std::ostream& out) {
+        const auto go_start = std::chrono::steady_clock::now();
         ensure_attack_ready();
         if (!ensure_search_eval_ready(out, "info string mnue unavailable, search aborted"))
             return;
@@ -1548,7 +1528,6 @@ struct UciSession {
         limits.multipv = multipv;
         limits.stop = &stop_requested;
         limits.pondering = &pondering;
-        limits.ponder_time_offset_ms = &ponder_time_offset_ms;
         limits.thread_count = threads;
         limits.thread_id = 0;
         limits.report_info = true;
@@ -1561,9 +1540,7 @@ struct UciSession {
         stop_requested.store(false, std::memory_order_release);
         ponder_search.store(limits.ponder, std::memory_order_release);
         pondering.store(limits.ponder, std::memory_order_release);
-        ponder_hit_received.store(false, std::memory_order_release);
-        ponder_time_offset_ms.store(0, std::memory_order_release);
-        search_start_ms.store(steady_now_ms(), std::memory_order_release);
+        limits.start_time = go_start;
 
         const Position root = pos;
         search_running.store(true, std::memory_order_release);
@@ -1587,9 +1564,6 @@ struct UciSession {
             std::cout << std::endl;
             ponder_search.store(false, std::memory_order_release);
             pondering.store(false, std::memory_order_release);
-            ponder_hit_received.store(false, std::memory_order_release);
-            ponder_time_offset_ms.store(0, std::memory_order_release);
-            search_start_ms.store(0, std::memory_order_release);
             search_running.store(false, std::memory_order_release);
         });
     }

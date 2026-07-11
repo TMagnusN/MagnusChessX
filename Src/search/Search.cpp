@@ -99,6 +99,11 @@ struct RootMsvShared {
     std::vector<Record> records;
 };
 
+struct SearchTimeSignals {
+    std::atomic<int> best_move_changes{0};
+    std::atomic<bool> increase_depth{true};
+};
+
 namespace {
 
 [[nodiscard]] constexpr bool is_valid_score(int score) noexcept {
@@ -778,6 +783,7 @@ struct Searcher {
     u64 tb_hits = 0;
     u64 published_tb_hits = 0;
     int seldepth = 0;
+    int completed_depth = 0;
     int root_side_to_move = WHITE;
     HistoryTables history_tables{};
     mutable mnue::P2AccumulatorStack p2_accumulator_stack{};
@@ -796,6 +802,15 @@ struct Searcher {
     bool stop_on_ponderhit = false;  // time expired during ponder, stop on next ponderhit
     int nmp_min_ply = 0;
     u64 singular_verification_nodes = 0;
+
+    struct RootEffortEntry {
+        Move move = 0;
+        u64 effort = 0;
+        int average_score = VALUE_NONE;
+    };
+
+    std::array<RootEffortEntry, 256> root_effort_entries{};
+    int root_effort_count = 0;
 
     struct SingularExtensionOutcome {
         u64 searched = 0;
@@ -1959,15 +1974,47 @@ struct Searcher {
     }
 
     [[nodiscard]] inline int timed_elapsed_ms() const noexcept {
-        const int elapsed = elapsed_ms();
-        if (limits.ponder_time_offset_ms == nullptr)
-            return elapsed;
+        return elapsed_ms();
+    }
 
-        const int offset = std::max(
-            0,
-            limits.ponder_time_offset_ms->load(std::memory_order_acquire)
-        );
-        return std::max(0, elapsed - offset);
+    [[nodiscard]] RootEffortEntry* find_root_effort(Move move) noexcept {
+        for (int i = 0; i < root_effort_count; ++i)
+            if (root_effort_entries[static_cast<std::size_t>(i)].move == move)
+                return &root_effort_entries[static_cast<std::size_t>(i)];
+
+        if (move_is_none(move) || root_effort_count >= 256)
+            return nullptr;
+
+        RootEffortEntry& entry =
+            root_effort_entries[static_cast<std::size_t>(root_effort_count++)];
+        entry.move = move;
+        return &entry;
+    }
+
+    void record_root_effort(Move move, u64 effort, int score) noexcept {
+        RootEffortEntry* entry = find_root_effort(move);
+        if (entry == nullptr)
+            return;
+
+        entry->effort += effort;
+        entry->average_score = entry->average_score == VALUE_NONE
+            ? score
+            : (entry->average_score + score) / 2;
+    }
+
+    [[nodiscard]] u64 root_effort(Move move) noexcept {
+        RootEffortEntry* entry = find_root_effort(move);
+        return entry == nullptr ? 0 : entry->effort;
+    }
+
+    [[nodiscard]] int root_average_score(Move move) noexcept {
+        RootEffortEntry* entry = find_root_effort(move);
+        return entry == nullptr ? VALUE_NONE : entry->average_score;
+    }
+
+    inline void signal_best_move_change() noexcept {
+        if (limits.time_signals != nullptr)
+            limits.time_signals->best_move_changes.fetch_add(1, std::memory_order_relaxed);
     }
 
     [[nodiscard]] inline bool hit_hard_limit() noexcept {
@@ -2002,9 +2049,9 @@ struct Searcher {
 
         if (!limits.infinite &&
             limits.hard_time_ms > 0 &&
+            completed_depth > 0 &&
             timed_elapsed_ms() >= limits.hard_time_ms) {
             if (pondering_active()) {
-                stop_on_ponderhit = true;
                 return false;
             } else {
                 stopped = true;
@@ -4473,16 +4520,24 @@ struct Searcher {
             ++stats.root_moves_searched;
 #endif
             RootMsvActiveGuard msv_active(limits, move);
+            const u64 move_nodes_before = nodes;
             const RootMoveResult move_result =
                 search_root_move(root, move, depth, alpha, beta, i == 0);
             if (stopped)
                 break;
 
             const int score = move_result.score;
+            record_root_effort(
+                move,
+                nodes >= move_nodes_before ? nodes - move_nodes_before : 0,
+                score
+            );
             const int selection_score =
                 score + root_opening_preference_bonus(limits, root, move);
 
             if (selection_score > best_selection_score) {
+                if (!move_is_none(result.best_move) && result.best_move != move)
+                    signal_best_move_change();
                 best_selection_score = selection_score;
                 best_score = score;
                 result.best_move = move;
@@ -4605,12 +4660,18 @@ struct Searcher {
             ++stats.root_moves_searched;
 #endif
             RootMsvActiveGuard msv_active(limits, move);
+            const u64 move_nodes_before = nodes;
             const RootMoveResult move_result =
                 search_root_move(root, move, depth, alpha, beta, i == 0, i == 0);
             if (stopped)
                 break;
 
             const int score = move_result.score;
+            record_root_effort(
+                move,
+                nodes >= move_nodes_before ? nodes - move_nodes_before : 0,
+                score
+            );
             RootLine& line = root_lines[static_cast<std::size_t>(line_index)];
             line.searched = true;
             line.depth = depth;
@@ -4629,6 +4690,11 @@ struct Searcher {
             const int selection_score =
                 score + root_opening_preference_bonus(limits, root, move);
             if (selection_score > best_selection_score) {
+                if (pv_idx == 0 &&
+                    !move_is_none(result.best_move) &&
+                    result.best_move != move) {
+                    signal_best_move_change();
+                }
                 best_selection_score = selection_score;
                 best_score = score;
                 result.best_move = move;
@@ -4754,14 +4820,38 @@ struct IterationTimeState {
     std::array<int, 4> iter_values{};
     Move last_best_move = 0;
     int last_best_move_depth = 0;
-    int last_completed_score = 0;
-    double previous_time_reduction = 1.0;
-    int best_move_changes = 0;
+    double previous_time_reduction = 0.85;
+    double current_time_reduction = 1.0;
+    double total_best_move_changes = 0.0;
     int root_legal_count = 0;
-    bool have_last_score = false;
+    int search_again_counter = 0;
     int last_depth_time_ms = 0;   // wall time consumed by the previous completed depth
     u64 last_depth_nodes = 0;     // nodes consumed by the previous completed depth
+#if MAGNUS_SEARCHSTATS_OBS
+    double last_falling_eval = 1.0;
+    double last_instability = 1.0;
+    double last_effort_factor = 1.0;
+    double last_total_time = 0.0;
+    int last_effective_depth = 0;
+    bool last_stop_on_ponderhit = false;
+    bool last_increase_depth = true;
+#endif
 };
+
+void initialize_iteration_time_state(
+    const SearchLimits& limits,
+    IterationTimeState& state
+) noexcept {
+    const int initial_score =
+        limits.time_state != nullptr &&
+        limits.time_state->previous_score != VALUE_NONE
+            ? limits.time_state->previous_score
+            : 0;
+    state.iter_values.fill(initial_score);
+    if (limits.time_state != nullptr)
+        state.previous_time_reduction =
+            limits.time_state->previous_time_reduction;
+}
 
 [[nodiscard]] inline bool use_stockfish_style_time_management(
     const SearchLimits& limits
@@ -4776,32 +4866,30 @@ struct IterationTimeState {
     Searcher& searcher,
     IterationTimeState& time_state,
     const SearchResult& current,
-    int depth
+    int depth,
+    int effective_depth,
+    u64 total_nodes
 ) noexcept {
     const int iter_slot = depth & 3;
     const int older_score =
         depth > 4 ? time_state.iter_values[iter_slot] : current.score;
-    const int previous_score =
-        time_state.have_last_score ? time_state.last_completed_score : current.score;
+    const int previous_average_score =
+        searcher.limits.time_state != nullptr &&
+        searcher.limits.time_state->previous_average_score != VALUE_NONE
+            ? searcher.limits.time_state->previous_average_score
+            : current.score;
 
     if (!move_is_none(current.best_move) &&
         current.best_move != time_state.last_best_move) {
-        if (!move_is_none(time_state.last_best_move))
-            ++time_state.best_move_changes;
         time_state.last_best_move = current.best_move;
         time_state.last_best_move_depth = depth;
     }
 
     bool should_stop = false;
 
-    // While pondering, skip ALL time management — the search runs
-    // unbounded until the GUI sends stop or ponderhit.
-    if (searcher.pondering_active())
-        return false;
-
-    // When a previous ponder time-budget exhausted and ponderhit arrived:
-    // stop immediately at the next iteration boundary.
-    if (searcher.stop_on_ponderhit) {
+    // Dynamic signals continue to evolve while pondering. Once the useful
+    // budget is consumed, defer the stop until ponderhit.
+    if (searcher.stop_on_ponderhit && !searcher.pondering_active()) {
         searcher.stopped = true;
         searcher.hard_stop = true;
         return true;
@@ -4823,11 +4911,20 @@ struct IterationTimeState {
     }
 
     if (use_stockfish_style_time_management(searcher.limits)) {
+        time_state.total_best_move_changes /= 2.0;
+        if (searcher.limits.time_signals != nullptr) {
+            time_state.total_best_move_changes +=
+                searcher.limits.time_signals->best_move_changes.exchange(
+                    0,
+                    std::memory_order_relaxed
+                );
+        }
+
         // SPSA-tuned time management: falling-eval scaling, sigmoid depth factor,
         // and best-move instability combine to adjust soft-time allocation.
         double falling_eval =
             (11.85
-             + 2.24 * double(previous_score - current.score)
+             + 2.24 * double(previous_average_score - current.score)
              + 0.93 * double(older_score - current.score))
             / 100.0;
         falling_eval = std::clamp(falling_eval, 0.57, 1.70);
@@ -4835,32 +4932,60 @@ struct IterationTimeState {
         constexpr double k = 0.51;
         const double center = double(time_state.last_best_move_depth) + 12.15;
         const double time_reduction =
-            0.66 + 0.85 / (0.98 + std::exp(-k * (double(depth) - center)));
+            0.66 + 0.85 / (0.98 + std::exp(-k * (double(effective_depth) - center)));
         const double reduction =
             (1.43 + time_state.previous_time_reduction) / (2.28 * time_reduction);
         const double best_move_instability =
             1.02
-            + 2.14 * double(time_state.best_move_changes)
-                / double(std::max(1, depth - 1));
+            + 2.14 * time_state.total_best_move_changes
+                / double(std::max(1, searcher.limits.thread_count));
+
+        const u64 best_effort = searcher.root_effort(current.best_move);
+        const u64 effort_per_100k =
+            best_effort * 100000ULL / std::max<u64>(1, total_nodes);
+        const double effort_factor = effort_per_100k >= 93340ULL ? 0.76 : 1.0;
 
         double total_time =
             double(searcher.limits.soft_time_ms)
             * falling_eval
             * reduction
-            * best_move_instability;
+            * best_move_instability
+            * effort_factor;
 
         if (time_state.root_legal_count == 1)
             total_time = std::min(502.0, total_time);
 
         const double stop_time =
             std::min(total_time, double(searcher.limits.hard_time_ms));
-        should_stop = double(searcher.timed_elapsed_ms()) > stop_time;
-        time_state.previous_time_reduction = time_reduction;
+        const double elapsed = double(searcher.timed_elapsed_ms());
+        if (elapsed > stop_time) {
+            if (searcher.pondering_active())
+                searcher.stop_on_ponderhit = true;
+            else
+                should_stop = true;
+        } else if (searcher.limits.time_signals != nullptr) {
+            searcher.limits.time_signals->increase_depth.store(
+                searcher.pondering_active() || elapsed <= total_time * 0.50,
+                std::memory_order_relaxed
+            );
+        }
+        time_state.current_time_reduction = time_reduction;
+#if MAGNUS_SEARCHSTATS_OBS
+        time_state.last_falling_eval = falling_eval;
+        time_state.last_instability = best_move_instability;
+        time_state.last_effort_factor = effort_factor;
+        time_state.last_total_time = total_time;
+        time_state.last_effective_depth = effective_depth;
+        time_state.last_stop_on_ponderhit = searcher.stop_on_ponderhit;
+        time_state.last_increase_depth =
+            searcher.limits.time_signals == nullptr ||
+            searcher.limits.time_signals->increase_depth.load(
+                std::memory_order_relaxed
+            );
+#endif
     }
 
     time_state.iter_values[iter_slot] = current.score;
-    time_state.last_completed_score = current.score;
-    time_state.have_last_score = true;
     return should_stop;
 }
 
@@ -4915,6 +5040,7 @@ void emit_searchstats_line(
     u64 depth_nodes,
     int aspiration_fail_low,
     int aspiration_fail_high,
+    const IterationTimeState& time_state,
     const Searcher::SearchStats& before,
     const Searcher::SearchStats& after
 ) {
@@ -4923,6 +5049,13 @@ void emit_searchstats_line(
         << " depthnodes " << depth_nodes
         << " aspiration_fail_low " << aspiration_fail_low
         << " aspiration_fail_high " << aspiration_fail_high
+        << " tm_falling " << time_state.last_falling_eval
+        << " tm_instability " << time_state.last_instability
+        << " tm_effort " << time_state.last_effort_factor
+        << " tm_total_ms " << time_state.last_total_time
+        << " tm_effective_depth " << time_state.last_effective_depth
+        << " tm_increase_depth " << (time_state.last_increase_depth ? 1 : 0)
+        << " tm_stop_on_ponderhit " << (time_state.last_stop_on_ponderhit ? 1 : 0)
         << " root_moves_searched "
         << (after.root_moves_searched - before.root_moves_searched)
         << " root_pvs_researches "
@@ -5045,6 +5178,8 @@ struct IterativeWorkerResult {
     int pv_length = 0;
     memory::Bound score_bound = memory::BOUND_EXACT;
     std::vector<RootLine> lines{};
+    int best_average_score = VALUE_NONE;
+    double time_reduction = 0.85;
 };
 
 [[nodiscard]] bool has_worker_best(
@@ -5853,6 +5988,7 @@ void emit_root_lines_info(
     const int max_depth =
         std::clamp(searcher.limits.depth, 1, MAX_SEARCH_DEPTH);
     IterationTimeState time_state{};
+    initialize_iteration_time_state(searcher.limits, time_state);
     if (searcher.limits.root_move_count > 0) {
         time_state.root_legal_count = searcher.limits.root_move_count;
         fallback_best_move = searcher.limits.root_moves[0];
@@ -5865,6 +6001,13 @@ void emit_root_lines_info(
     }
 
     for (int depth = 1; depth <= max_depth; ++depth) {
+        if (searcher.limits.time_signals != nullptr &&
+            !searcher.limits.time_signals->increase_depth.load(
+                std::memory_order_relaxed
+            )) {
+            ++time_state.search_again_counter;
+        }
+
         SearchResult current{};
         u64 depth_nodes = 0;
         u64 depth_tb_hits = 0;
@@ -5878,6 +6021,8 @@ void emit_root_lines_info(
         int beta = VALUE_INF;
         int delta = ASPIRATION_DELTA;
         int depth_max_seldepth = 0;
+        int failed_high_count = 0;
+        int completed_effective_depth = depth;
         memory::Bound current_score_bound = memory::BOUND_EXACT;
         int current_bound_alpha = alpha;
         int current_bound_beta = beta;
@@ -5895,15 +6040,25 @@ void emit_root_lines_info(
 
             const int attempt_alpha = alpha;
             const int attempt_beta = beta;
+            const int effective_depth = searcher.limits.time_signals == nullptr
+                ? depth
+                : std::max(
+                      1,
+                      depth
+                          - failed_high_count
+                          - 3 * (time_state.search_again_counter + 1) / 4
+                  );
+            completed_effective_depth = effective_depth;
             current_bound_alpha = attempt_alpha;
             current_bound_beta = attempt_beta;
             current = searcher.search_root(
                 keyed_root,
-                depth,
+                effective_depth,
                 hint_move,
                 attempt_alpha,
                 attempt_beta
             );
+            current.depth = depth;
             depth_max_seldepth = std::max(depth_max_seldepth, searcher.seldepth);
             current.seldepth = depth_max_seldepth;
             searcher.publish_nodes();
@@ -5920,6 +6075,7 @@ void emit_root_lines_info(
                 break;
 
             if (current.score <= attempt_alpha) {
+                failed_high_count = 0;
 #if MAGNUS_SEARCHSTATS_OBS
                 ++aspiration_fail_low;
 #endif
@@ -5930,6 +6086,7 @@ void emit_root_lines_info(
             }
 
             if (current.score >= attempt_beta) {
+                ++failed_high_count;
 #if MAGNUS_SEARCHSTATS_OBS
                 ++aspiration_fail_high;
 #endif
@@ -5957,7 +6114,7 @@ void emit_root_lines_info(
                 searcher.limits,
                 current.best_move,
                 rebuilt_pv,
-                std::min(depth, MAX_PLY)
+                std::min(completed_effective_depth, MAX_PLY)
             );
             if (rebuilt_length > searcher.pv_length[0] &&
                 rebuilt_pv[0] == current.best_move) {
@@ -5972,8 +6129,12 @@ void emit_root_lines_info(
 
         if (!searcher.stopped && !move_is_none(current.best_move)) {
             const u64 recovery_tb_hits_before = searcher.tb_hits;
-            const u64 recovery_nodes =
-                searcher.recover_ponder_pv_full_window(keyed_root, current, depth);
+            const u64 recovery_nodes = searcher.recover_ponder_pv_full_window(
+                keyed_root,
+                current,
+                completed_effective_depth
+            );
+            current.depth = depth;
             if (recovery_nodes > 0) {
                 depth_nodes += recovery_nodes;
                 depth_tb_hits += searcher.tb_hits >= recovery_tb_hits_before
@@ -6009,6 +6170,8 @@ void emit_root_lines_info(
             prev_depth_end_ms = now_ms;
         }
         const bool stopped_mid_depth = searcher.stopped && best.depth > 0;
+        if (!searcher.stopped)
+            searcher.completed_depth = depth;
 
         if (!searcher.stopped || best.depth == 0) {
             best = current;
@@ -6027,7 +6190,7 @@ void emit_root_lines_info(
             root_msv_record_completed(
                 searcher.limits,
                 current.best_move,
-                depth,
+                completed_effective_depth,
                 current.seldepth,
                 current.score,
                 current_score_bound,
@@ -6039,7 +6202,14 @@ void emit_root_lines_info(
 
         const bool should_stop_for_time =
             !stopped_mid_depth &&
-            should_stop_after_iteration(searcher, time_state, best, depth);
+            should_stop_after_iteration(
+                searcher,
+                time_state,
+                best,
+                depth,
+                completed_effective_depth,
+                total_nodes
+            );
 
         if (local_out != nullptr &&
             searcher.limits.report_info &&
@@ -6081,6 +6251,7 @@ void emit_root_lines_info(
                 reported_depth_nodes,
                 aspiration_fail_low,
                 aspiration_fail_high,
+                time_state,
                 stats_before,
                 searcher.stats
             );
@@ -6142,6 +6313,7 @@ void emit_root_lines_info(
                     reported_depth_nodes,
                     aspiration_fail_low,
                     aspiration_fail_high,
+                    time_state,
                     stats_before,
                     searcher.stats
                 );
@@ -6212,6 +6384,8 @@ void emit_root_lines_info(
         searcher.emit_lmr_observation(*local_out);
 #endif
 
+    result.best_average_score = searcher.root_average_score(result.best.best_move);
+    result.time_reduction = time_state.current_time_reduction;
     return result;
 }
 
@@ -6251,6 +6425,7 @@ void emit_root_lines_info(
     const int max_depth =
         std::clamp(searcher.limits.depth, 1, MAX_SEARCH_DEPTH);
     IterationTimeState time_state{};
+    initialize_iteration_time_state(searcher.limits, time_state);
     std::vector<RootLine> root_lines{};
     build_root_lines(searcher, keyed_root, root_lines, 1);
     time_state.root_legal_count = static_cast<int>(root_lines.size());
@@ -6258,6 +6433,13 @@ void emit_root_lines_info(
         fallback_best_move = root_lines.front().move;
 
     for (int depth = 1; depth <= max_depth; ++depth) {
+        if (searcher.limits.time_signals != nullptr &&
+            !searcher.limits.time_signals->increase_depth.load(
+                std::memory_order_relaxed
+            )) {
+            ++time_state.search_again_counter;
+        }
+
         SearchResult current{};
         u64 depth_nodes = 0;
         u64 depth_tb_hits = 0;
@@ -6269,6 +6451,7 @@ void emit_root_lines_info(
 
         memory::Bound current_score_bound = memory::BOUND_EXACT;
         int completed_line_count = 0;
+        int completed_effective_depth = depth;
 
         for (RootLine& line : root_lines) {
             line.previous_score = line.score;
@@ -6304,6 +6487,7 @@ void emit_root_lines_info(
                 int beta = VALUE_INF;
                 int delta = ASPIRATION_DELTA;
                 int line_max_seldepth = 0;
+                int failed_high_count = 0;
 
                 const int previous_score =
                     root_lines[static_cast<std::size_t>(pv_idx)].previous_score;
@@ -6329,6 +6513,16 @@ void emit_root_lines_info(
 
                     const int attempt_alpha = alpha;
                     const int attempt_beta = beta;
+                    const int effective_depth = searcher.limits.time_signals == nullptr
+                        ? depth
+                        : std::max(
+                              1,
+                              depth
+                                  - failed_high_count
+                                  - 3 * (time_state.search_again_counter + 1) / 4
+                          );
+                    if (pv_idx == 0)
+                        completed_effective_depth = effective_depth;
                     const Move line_hint = pv_idx == 0
                         ? hint_move
                         : root_lines[static_cast<std::size_t>(pv_idx)].move;
@@ -6337,11 +6531,12 @@ void emit_root_lines_info(
                         keyed_root,
                         root_lines,
                         pv_idx,
-                        depth,
+                        effective_depth,
                         line_hint,
                         attempt_alpha,
                         attempt_beta
                     );
+                    current.depth = depth;
                     line_max_seldepth = std::max(line_max_seldepth, searcher.seldepth);
                     current.seldepth = line_max_seldepth;
                     if (pv_idx < static_cast<int>(root_lines.size()))
@@ -6365,6 +6560,7 @@ void emit_root_lines_info(
                         break;
 
                     if (current.score <= attempt_alpha) {
+                        failed_high_count = 0;
 #if MAGNUS_SEARCHSTATS_OBS
                         ++aspiration_fail_low;
 #endif
@@ -6375,6 +6571,7 @@ void emit_root_lines_info(
                     }
 
                     if (current.score >= attempt_beta) {
+                        ++failed_high_count;
 #if MAGNUS_SEARCHSTATS_OBS
                         ++aspiration_fail_high;
 #endif
@@ -6440,7 +6637,7 @@ void emit_root_lines_info(
                 searcher.limits,
                 current.best_move,
                 rebuilt_pv,
-                std::min(depth, MAX_PLY)
+                std::min(completed_effective_depth, MAX_PLY)
             );
             if (rebuilt_length > root_lines.front().pv_length &&
                 rebuilt_pv[0] == current.best_move) {
@@ -6465,8 +6662,12 @@ void emit_root_lines_info(
             const u64 recovery_tb_hits_before = searcher.tb_hits;
             const int score_before_recovery = current.score;
             const memory::Bound bound_before_recovery = current_score_bound;
-            const u64 recovery_nodes =
-                searcher.recover_ponder_pv_full_window(keyed_root, current, depth);
+            const u64 recovery_nodes = searcher.recover_ponder_pv_full_window(
+                keyed_root,
+                current,
+                completed_effective_depth
+            );
+            current.depth = depth;
             if (recovery_nodes > 0) {
                 depth_nodes += recovery_nodes;
                 depth_tb_hits += searcher.tb_hits >= recovery_tb_hits_before
@@ -6530,6 +6731,8 @@ void emit_root_lines_info(
             prev_depth_end_ms = now_ms;
         }
         const bool stopped_mid_depth = searcher.stopped && best.depth > 0;
+        if (!searcher.stopped)
+            searcher.completed_depth = depth;
 
         if (!searcher.stopped || best.depth == 0) {
             best = current;
@@ -6577,7 +6780,14 @@ void emit_root_lines_info(
 
         const bool should_stop_for_time =
             !stopped_mid_depth &&
-            should_stop_after_iteration(searcher, time_state, best, depth);
+            should_stop_after_iteration(
+                searcher,
+                time_state,
+                best,
+                completed_effective_depth,
+                completed_effective_depth,
+                total_nodes
+            );
 
         if (local_out != nullptr &&
             searcher.limits.report_info &&
@@ -6634,6 +6844,7 @@ void emit_root_lines_info(
                 reported_depth_nodes,
                 aspiration_fail_low,
                 aspiration_fail_high,
+                time_state,
                 stats_before,
                 searcher.stats
             );
@@ -6725,6 +6936,7 @@ void emit_root_lines_info(
                     reported_depth_nodes,
                     aspiration_fail_low,
                     aspiration_fail_high,
+                    time_state,
                     stats_before,
                     searcher.stats
                 );
@@ -6795,6 +7007,8 @@ void emit_root_lines_info(
         searcher.emit_lmr_observation(*local_out);
 #endif
 
+    result.best_average_score = searcher.root_average_score(result.best.best_move);
+    result.time_reduction = time_state.current_time_reduction;
     return result;
 }
 
@@ -6810,6 +7024,9 @@ void emit_root_lines_info(
     memory::memory_new_search(mem);
 
     SearchLimits local_limits = limits;
+    SearchTimeSignals time_signals{};
+    if (local_limits.use_time_management)
+        local_limits.time_signals = &time_signals;
     Searcher searcher(mem, local_limits);
     IterativeWorkerResult result =
         iterative_deepening_worker(searcher, root, out, search_start);
@@ -6868,6 +7085,18 @@ void emit_root_lines_info(
                 1
             );
         }
+    }
+
+    if (local_limits.use_time_management &&
+        local_limits.time_state != nullptr &&
+        result.best.depth > 0 &&
+        !move_is_none(result.best.best_move)) {
+        local_limits.time_state->previous_score = result.best.score;
+        local_limits.time_state->previous_average_score =
+            result.best_average_score == VALUE_NONE
+                ? result.best.score
+                : result.best_average_score;
+        local_limits.time_state->previous_time_reduction = result.time_reduction;
     }
 
     return result.best;
@@ -6965,6 +7194,7 @@ void emit_root_lines_info(
     };
 
     SearchLimits main_limits = limits;
+    SearchTimeSignals time_signals{};
     std::atomic<bool> shared_stop{false};
     std::atomic<u64> shared_nodes{0};
     std::atomic<u64> shared_tb_hits{limits.root_tb_hits};
@@ -6975,6 +7205,8 @@ void emit_root_lines_info(
     main_limits.stop = &shared_stop;
     main_limits.shared_nodes = &shared_nodes;
     main_limits.shared_tb_hits = &shared_tb_hits;
+    if (main_limits.use_time_management)
+        main_limits.time_signals = &time_signals;
     if (main_limits.multipv > 1) {
         main_limits.use_msv_smp = false;
         main_limits.msv_info = false;
@@ -7044,17 +7276,8 @@ void emit_root_lines_info(
             Searcher::clock::now() - search_start
         ).count()
     );
-    const int ponder_offset_ms =
-        main_limits.ponder_time_offset_ms != nullptr
-            ? std::max(
-                  0,
-                  main_limits.ponder_time_offset_ms->load(std::memory_order_acquire)
-              )
-            : 0;
-    const int elapsed_before_recovery =
-        std::max(0, wall_elapsed_before_recovery - ponder_offset_ms);
     const bool recovery_has_time =
-        !timed_search || elapsed_before_recovery < main_limits.hard_time_ms;
+        !timed_search || wall_elapsed_before_recovery < main_limits.hard_time_ms;
     if (selected_needs_ponder_recovery && recovery_has_time) {
         std::atomic<bool> recovery_stop{false};
         SearchLimits recovery_limits = main_limits;
@@ -7076,9 +7299,11 @@ void emit_root_lines_info(
         recovery_limits.use_msv_smp = false;
         recovery_limits.msv_info = false;
         recovery_limits.root_msv = nullptr;
+        recovery_limits.time_signals = nullptr;
 
         Searcher recovery_searcher(mem, recovery_limits);
         recovery_searcher.p2_accumulator_stack.reset();
+        recovery_searcher.completed_depth = best.best.depth;
         reset_searcher_iteration(
             recovery_searcher,
             timed_search ? search_start : Searcher::clock::now(),
@@ -7179,6 +7404,18 @@ void emit_root_lines_info(
         }
     }
 
+    if (main_limits.use_time_management &&
+        main_limits.time_state != nullptr &&
+        best.best.depth > 0 &&
+        !move_is_none(best.best.best_move)) {
+        main_limits.time_state->previous_score = best.best.score;
+        main_limits.time_state->previous_average_score =
+            best.best_average_score == VALUE_NONE
+                ? best.best.score
+                : best.best_average_score;
+        main_limits.time_state->previous_time_reduction = results[0].time_reduction;
+    }
+
     return best.best;
 }
 
@@ -7188,7 +7425,10 @@ SearchResult iterative_deepening(
     const SearchLimits& limits,
     std::ostream* out
 ) {
-    const auto search_start = Searcher::clock::now();
+    const auto search_start =
+        limits.start_time.time_since_epoch().count() != 0
+            ? limits.start_time
+            : Searcher::clock::now();
     SearchLimits prepared_limits = limits;
     syzygy::RootProbe root_probe{};
     if (syzygy::rank_root_moves(

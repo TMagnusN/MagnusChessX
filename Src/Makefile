@@ -256,6 +256,7 @@ else
 endif
 
 PROFGEN_OUTPUT := $(BUILD_DIR)/$(TARGET)-$(EFFECTIVE_PROFILE)-profgen$(EXEEXT)
+TIME_TEST_OUTPUT := $(BUILD_DIR)/TimeManagementTests-$(EFFECTIVE_PROFILE)$(EXEEXT)
 
 ifeq ($(PGO),1)
 	AUTO_BUILD_TARGET := profile-build
@@ -279,7 +280,7 @@ endif
 
 .PHONY: all auto portable64 native64 avx2+bmi2 avx512+bmi2 variants cpu-variants detect build release releases \
 	pgo profile-build pgo-step1 pgo-step2 pgo-step3 \
-	pgo-generate-build pgo-use-build run \
+	pgo-generate-build pgo-use-build run time-test \
 	clean objclean pgo-clean distclean
 
 all: auto
@@ -415,6 +416,13 @@ pgo-step3:
 run: all
 	$(RUN_CMD)
 
+$(TIME_TEST_OUTPUT): tests/TimeManagementTests.cpp search/Time.cpp search/Time.h search/Search.h board/Position.h | $(OBJ_DIR)
+	$(CXX) -std=c++20 $(ARCH_FLAGS) -O2 $(LOWLEVEL_FLAGS) $(ENCODING_FLAGS) $(WARN_FLAGS) \
+		-iquote . tests/TimeManagementTests.cpp search/Time.cpp -o $@
+
+time-test: $(TIME_TEST_OUTPUT)
+	$(TIME_TEST_OUTPUT)
+
 objclean:
 	$(call RMDIR_R,$(OBJ_DIR))
 
@@ -436,6 +444,8 @@ clean:
 	$(call RM_F,$(BUILD_DIR)/$(TARGET)-native64-pgo$(EXEEXT))
 	$(call RM_F,$(BUILD_DIR)/$(TARGET)-avx2+bmi2-pgo$(EXEEXT))
 	$(call RM_F,$(BUILD_DIR)/$(TARGET)-avx512+bmi2-pgo$(EXEEXT))
+	$(call RM_F,$(BUILD_DIR)/TimeManagementTests-portable64$(EXEEXT))
+	$(call RM_F,$(BUILD_DIR)/TimeManagementTests-native64$(EXEEXT))
 
 distclean: clean
 	$(call RMDIR_R,$(BUILD_DIR)/pgo)

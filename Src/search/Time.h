@@ -99,6 +99,7 @@ public:
 private:
     double original_time_adjust_ = -1.0;
     int move_overhead_ms_ = DEFAULT_MOVE_OVERHEAD_MS;
+    search::TimeManagementState state_{};
 };
 
 } // namespace magnus::timeman

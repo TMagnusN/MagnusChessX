@@ -53,6 +53,7 @@ namespace {
  */
 void TimeManager::new_game() noexcept {
     original_time_adjust_ = -1.0;
+    state_ = search::TimeManagementState{};
 }
 
 void TimeManager::set_move_overhead_ms(int value) noexcept {
@@ -84,6 +85,7 @@ bool TimeManager::build_limits(
     limits.ponder = params.ponder;
     limits.infinite = false;
     limits.use_time_management = false;
+    limits.time_state = nullptr;
 
     if (params.depth > 0)
         limits.depth = params.depth;
@@ -103,6 +105,7 @@ bool TimeManager::build_limits(
 
     if (!limits.infinite && remaining > 0) {
         limits.use_time_management = true;
+        limits.time_state = &state_;
         const int ply = game_ply_from_position(pos);
         const i64 safe_remaining = std::max(1, remaining);
         const i64 safe_increment = std::max(0, increment);
@@ -165,7 +168,7 @@ bool TimeManager::build_limits(
                     0.825179 * double(safe_remaining) - double(overhead),
                     max_scale * double(optimum)
                 )
-            )
+            ) - 10
         );
 
         if (params.ponder)
