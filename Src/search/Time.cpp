@@ -165,11 +165,15 @@ bool TimeManager::build_limits(
                     0.825179 * double(safe_remaining) - double(overhead),
                     max_scale * double(optimum)
                 )
-            ) - 10
+            )
         );
 
         if (params.ponder)
             optimum += optimum / 4;
+
+        // The hard deadline is the safety cap. Never publish a soft budget
+        // beyond it, especially at very short time controls.
+        optimum = std::min(optimum, maximum);
 
         limits.soft_time_ms = optimum;
         limits.hard_time_ms = maximum;

@@ -2653,6 +2653,9 @@ struct Searcher {
         int beta,
         bool pv_node
     ) noexcept {
+        if (stopped)
+            return;
+
         memory::tt_save(
             mem.tt,
             memory::tt_key(pos, mem.tables),
@@ -2982,7 +2985,7 @@ struct Searcher {
         ++nodes;
         poll_limits();
         if (stopped)
-            return alpha;
+            return beta;
 
         if (ply >= MAX_PLY - 1)
             return evaluate_search_position(pos);
@@ -3098,6 +3101,9 @@ struct Searcher {
 
             const int score = -qsearch(pos, -beta, -alpha, ply + 1);
             unmake_search_move(pos, move, st);
+            if (stopped)
+                return beta;
+
             if (score > alpha) {
                 alpha = score;
                 best_move = move;
@@ -3134,7 +3140,7 @@ struct Searcher {
         update_seldepth(ply);
 
         if (stopped)
-            return alpha;
+            return beta;
 
         if (ply >= MAX_PLY - 1)
             return evaluate_search_position(pos);
@@ -3153,7 +3159,7 @@ struct Searcher {
         ++nodes;
         poll_limits();
         if (stopped)
-            return alpha;
+            return beta;
 
         const int alpha0 = alpha;
         const bool pv_node = (beta - alpha) > 1;
@@ -3356,6 +3362,8 @@ struct Searcher {
                 false
             );
             undo_null_move(pos, null_state);
+            if (stopped)
+                return beta;
 
             if (score >= beta && !is_mate_window(score)) {
 #if MAGNUS_SEARCH_OBS
@@ -3380,6 +3388,8 @@ struct Searcher {
                     true
                 );
                 nmp_min_ply = old_nmp_min_ply;
+                if (stopped)
+                    return beta;
 
                 if (verify_score >= beta) {
 #if MAGNUS_SEARCH_OBS
@@ -3468,6 +3478,8 @@ struct Searcher {
                     }
 
                     unmake_search_move(pos, move, st);
+                    if (stopped)
+                        return beta;
 
                     if (score >= probcut_beta) {
 #if MAGNUS_SEARCH_OBS
@@ -3594,7 +3606,7 @@ struct Searcher {
 
         for (;;) {
             if (stopped)
-                break;
+                return beta;
 
             const Move move = picker.next();
             if (move_is_none(move))
@@ -3876,6 +3888,9 @@ struct Searcher {
                         false,
                         move
                     );
+                    if (stopped)
+                        return beta;
+
                     record_singular_test(
                         singular_ctx,
                         singular_score,
@@ -3883,8 +3898,6 @@ struct Searcher {
                         beta,
                         nodes - singular_nodes_before
                     );
-                    if (stopped)
-                        return alpha;
 
                     if (singular_score < singular_beta) {
                         move_extension = 1;
@@ -4123,6 +4136,8 @@ struct Searcher {
             }
 
             unmake_search_move(pos, move, st);
+            if (stopped)
+                return beta;
 
             record_singular_outcome(
                 singular_bucket_index,
@@ -4363,7 +4378,7 @@ struct Searcher {
             score = -pvs(local_root, depth - 1, -beta, -alpha, 1, true);
         } else {
             score = -pvs(local_root, depth - 1, -alpha - 1, -alpha, 1, true);
-            if (score > alpha) {
+            if (!stopped && score > alpha) {
 #if MAGNUS_SEARCHSTATS_OBS
                 ++stats.root_pvs_researches;
 #endif
@@ -4374,6 +4389,11 @@ struct Searcher {
         unmake_search_move(local_root, move, st);
 
         RootMoveResult result;
+        if (stopped) {
+            result.score = alpha_before;
+            return result;
+        }
+
         result.score = score;
         result.improved_alpha = score > alpha_before;
         if (force_pv_capture || result.improved_alpha)
@@ -4455,6 +4475,9 @@ struct Searcher {
             RootMsvActiveGuard msv_active(limits, move);
             const RootMoveResult move_result =
                 search_root_move(root, move, depth, alpha, beta, i == 0);
+            if (stopped)
+                break;
+
             const int score = move_result.score;
             const int selection_score =
                 score + root_opening_preference_bonus(limits, root, move);
@@ -4490,7 +4513,8 @@ struct Searcher {
         if (best_score == -VALUE_INF)
             best_score = alpha;
 
-        if (limits.components.correction_history &&
+        if (!stopped &&
+            limits.components.correction_history &&
             !checked &&
             !is_mate_window(best_score) &&
             best_score > alpha0 &&
@@ -4583,6 +4607,9 @@ struct Searcher {
             RootMsvActiveGuard msv_active(limits, move);
             const RootMoveResult move_result =
                 search_root_move(root, move, depth, alpha, beta, i == 0, i == 0);
+            if (stopped)
+                break;
+
             const int score = move_result.score;
             RootLine& line = root_lines[static_cast<std::size_t>(line_index)];
             line.searched = true;
@@ -4638,7 +4665,8 @@ struct Searcher {
             best_score = selected.score;
         }
 
-        if (limits.components.correction_history &&
+        if (!stopped &&
+            limits.components.correction_history &&
             pv_idx == 0 &&
             !checked &&
             !is_mate_window(best_score) &&
