@@ -38,6 +38,7 @@ struct Position {
     int castling_rights = 0;
     int halfmove_clock = 0;
     int fullmove_number = 1;
+    int plies_from_null = 0;
 
     Square king_sq[COLOR_NB]{ NO_SQ, NO_SQ };
 
@@ -60,6 +61,7 @@ struct StateInfo {
     Square ep_sq = NO_SQ;
     int halfmove_clock = 0;
     int fullmove_number = 1;
+    int plies_from_null = 0;
     Key key = 0ULL;
     Piece captured = PIECE_NONE;
     Square captured_sq = NO_SQ;
@@ -193,6 +195,14 @@ void unmake_move(
     const Tables& tables,
     const StateInfo& st
 ) noexcept;
+
+void make_null_move(
+    Position& pos,
+    const Tables& tables,
+    StateInfo& st
+) noexcept;
+
+void unmake_null_move(Position& pos, const StateInfo& st) noexcept;
 
 // Copy-make helpers used by perft and legality validation paths. The overload
 // with Tables keeps the incremental Zobrist key up to date as well.

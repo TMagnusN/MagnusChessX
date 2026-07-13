@@ -25,10 +25,13 @@ SOFTWARE.
 #pragma once
 
 #include <atomic>
+#include <array>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <iosfwd>
 #include <string>
+#include <vector>
 
 #include "HistoryContext.h"
 #include "Memory.h"
@@ -54,6 +57,93 @@ struct Position;
  * 對外部完全透明。
  */
 namespace magnus::search {
+
+constexpr std::size_t TT_MOVE_TRUST_SIZE = 8192;
+constexpr int TT_MOVE_TRUST_LIMIT = 8192;
+constexpr std::size_t TT_MOVE_TRUST_BUCKETS = 8;
+inline constexpr char STOCKFISH_SINGULAR_REFERENCE_COMMIT[] =
+    "cb3d4ee9b47d0c5aae855b12379378ea1439675c"; // sf_18
+
+struct TtTrustBucketCounters {
+    u64 searched = 0;
+    u64 tt_best = 0;
+    u64 other_best = 0;
+    u64 fail_low = 0;
+    u64 single_extension = 0;
+    u64 double_extension = 0;
+    u64 triple_extension = 0;
+    u64 multi_cut = 0;
+    u64 depth_sum = 0;
+    u64 updates = 0;
+    u64 saturated = 0;
+};
+
+struct TtTrustTelemetry {
+    std::array<TtTrustBucketCounters, TT_MOVE_TRUST_BUCKETS> bucket{};
+};
+
+struct WorkerPersistentState {
+    std::array<std::array<i16, COLOR_NB>, TT_MOVE_TRUST_SIZE> tt_move_trust{};
+    TtTrustTelemetry telemetry{};
+    u64 game_epoch = 0;
+    u64 search_sequence = 0;
+
+    [[nodiscard]] int trust(const Position& pos) const noexcept;
+    void update_trust(
+        const Position& pos,
+        int bonus,
+        std::size_t telemetry_bucket = TT_MOVE_TRUST_BUCKETS
+    ) noexcept;
+    void clear() noexcept;
+};
+
+static_assert(sizeof(WorkerPersistentState::tt_move_trust) == 32 * 1024);
+
+class SearchSessionState {
+public:
+    SearchSessionState();
+    void ensure_workers(std::size_t count);
+    [[nodiscard]] WorkerPersistentState& worker(std::size_t id) noexcept;
+    void clear() noexcept;
+    void new_game() noexcept;
+    [[nodiscard]] u64 begin_search(std::size_t active);
+
+private:
+    std::vector<WorkerPersistentState> workers_{};
+    u64 game_epoch_ = 0;
+    u64 search_sequence_ = 0;
+};
+
+[[nodiscard]] std::size_t tt_move_trust_bucket(int trust) noexcept;
+[[nodiscard]] bool stockfish_capture_stage(Move move) noexcept;
+[[nodiscard]] bool stockfish_is_shuffling(
+    Move move,
+    const Position& pos,
+    Move move_at_ply_minus_2,
+    Move move_at_ply_minus_4,
+    int ply
+) noexcept;
+[[nodiscard]] constexpr int stockfish_singular_child_depth(
+    int move_base_depth,
+    int extension
+) noexcept {
+    return move_base_depth + extension;
+}
+[[nodiscard]] constexpr int stockfish_depth_after_alpha_improvement(
+    int node_depth,
+    bool decisive
+) noexcept {
+    return node_depth > 2 && node_depth < 14 && !decisive
+        ? node_depth - 2
+        : node_depth;
+}
+[[nodiscard]] constexpr int stockfish_fail_high_softbound(
+    int best_value,
+    int beta,
+    int node_depth
+) noexcept {
+    return (best_value * node_depth + beta) / (node_depth + 1);
+}
 
 /*
  * 搜尋層全局常數：
@@ -116,6 +206,17 @@ enum class SearchEvalKind : std::uint8_t {
     P2,
     X2K16
 };
+
+enum class TtTrustStage : std::uint8_t {
+    A = 1,
+    B = 2,
+    C = 3,
+    D = 4
+};
+
+// The normal engine runs one fixed experiment stage. Other stages are selected
+// only by the standalone bench command, never through the UCI protocol.
+inline constexpr TtTrustStage ACTIVE_TT_TRUST_STAGE = TtTrustStage::B;
 
 #ifndef MAGNUS_SEARCH_ENABLE_ASPIRATION
 #define MAGNUS_SEARCH_ENABLE_ASPIRATION 1
@@ -273,6 +374,7 @@ struct SearchLimits {
     int contempt = 0;                   // 輕視值：正值傾向避免和棋，負值傾向接受和棋
     bool full_pv = false;               // UCI info 的短 exact PV 是否從 TT chain 補全
     bool singular_telemetry = false;    // 是否收集 singular extension contextual telemetry
+    TtTrustStage tt_trust_stage = ACTIVE_TT_TRUST_STAGE;
     bool use_msv_smp = false;           // Search-local MSV-SMP root scheduling credit
     bool msv_info = false;              // Emit MSV-SMP debug info strings
     int multipv = 1;                    // Number of root principal variations to report
@@ -371,6 +473,7 @@ struct SearchResult {
 [[nodiscard]] SearchResult iterative_deepening(
     const Position& root,
     memory::Memory& mem,
+    SearchSessionState& session_state,
     const SearchLimits& limits,
     std::ostream* out = nullptr
 );

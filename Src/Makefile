@@ -257,6 +257,7 @@ endif
 
 PROFGEN_OUTPUT := $(BUILD_DIR)/$(TARGET)-$(EFFECTIVE_PROFILE)-profgen$(EXEEXT)
 TIME_TEST_OUTPUT := $(BUILD_DIR)/TimeManagementTests-$(EFFECTIVE_PROFILE)$(EXEEXT)
+SEARCH_REFERENCE_TEST_OUTPUT := $(BUILD_DIR)/SearchReferenceTests-$(EFFECTIVE_PROFILE)$(EXEEXT)
 
 ifeq ($(PGO),1)
 	AUTO_BUILD_TARGET := profile-build
@@ -280,7 +281,7 @@ endif
 
 .PHONY: all auto portable64 native64 avx2+bmi2 avx512+bmi2 variants cpu-variants detect build release releases \
 	pgo profile-build pgo-step1 pgo-step2 pgo-step3 \
-	pgo-generate-build pgo-use-build run time-test \
+	pgo-generate-build pgo-use-build run time-test search-reference-test \
 	clean objclean pgo-clean distclean
 
 all: auto
@@ -422,6 +423,14 @@ $(TIME_TEST_OUTPUT): tests/TimeManagementTests.cpp search/Time.cpp search/Time.h
 
 time-test: $(TIME_TEST_OUTPUT)
 	$(TIME_TEST_OUTPUT)
+
+$(SEARCH_REFERENCE_TEST_OUTPUT): tests/SearchReferenceTests.cpp $(filter-out $(OBJ_DIR)/Main.o $(OBJ_DIR)/Uci.o,$(OBJ)) | $(OBJ_DIR)
+	$(CXX) $(BASE_CXXFLAGS) tests/SearchReferenceTests.cpp \
+		$(filter-out $(OBJ_DIR)/Main.o $(OBJ_DIR)/Uci.o,$(OBJ)) \
+		-o $@ $(BASE_LDFLAGS) $(LDLIBS)
+
+search-reference-test: $(SEARCH_REFERENCE_TEST_OUTPUT)
+	$(SEARCH_REFERENCE_TEST_OUTPUT)
 
 objclean:
 	$(call RMDIR_R,$(OBJ_DIR))

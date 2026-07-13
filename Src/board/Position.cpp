@@ -135,6 +135,7 @@ void position_clear(Position& pos) noexcept {
     pos.castling_rights = 0;
     pos.halfmove_clock = 0;
     pos.fullmove_number = 1;
+    pos.plies_from_null = 0;
 
     pos.king_sq[WHITE] = NO_SQ;
     pos.king_sq[BLACK] = NO_SQ;
@@ -163,6 +164,7 @@ void position_copy_without_accumulators(Position& dst, const Position& src) noex
     dst.castling_rights = src.castling_rights;
     dst.halfmove_clock = src.halfmove_clock;
     dst.fullmove_number = src.fullmove_number;
+    dst.plies_from_null = src.plies_from_null;
 
     dst.king_sq[WHITE] = src.king_sq[WHITE];
     dst.king_sq[BLACK] = src.king_sq[BLACK];
@@ -385,9 +387,12 @@ void make_move(
     state.ep_sq = pos.ep_sq;
     state.halfmove_clock = pos.halfmove_clock;
     state.fullmove_number = pos.fullmove_number;
+    state.plies_from_null = pos.plies_from_null;
     state.key = pos.key;
     state.captured = PIECE_NONE;
     state.captured_sq = NO_SQ;
+
+    ++pos.plies_from_null;
 
     const Color us = static_cast<Color>(pos.side_to_move);
     const Color them = static_cast<Color>(us ^ 1);
@@ -541,6 +546,43 @@ void unmake_move(
     pos.ep_sq = state.ep_sq;
     pos.halfmove_clock = state.halfmove_clock;
     pos.fullmove_number = state.fullmove_number;
+    pos.plies_from_null = state.plies_from_null;
+    pos.key = state.key;
+}
+
+void make_null_move(
+    Position& pos,
+    const Tables& tables,
+    StateInfo& state
+) noexcept {
+    state.castling_rights = pos.castling_rights;
+    state.ep_sq = pos.ep_sq;
+    state.halfmove_clock = pos.halfmove_clock;
+    state.fullmove_number = pos.fullmove_number;
+    state.plies_from_null = pos.plies_from_null;
+    state.key = pos.key;
+    state.captured = PIECE_NONE;
+    state.captured_sq = NO_SQ;
+
+    if (has_ep(pos))
+        pos.key ^= tables.zobrist.ep_file[file_of(pos.ep_sq)];
+    if (pos.side_to_move == BLACK)
+        ++pos.fullmove_number;
+
+    ++pos.halfmove_clock;
+    pos.plies_from_null = 0;
+    pos.ep_sq = NO_SQ;
+    pos.side_to_move ^= 1;
+    pos.key ^= tables.zobrist.side;
+}
+
+void unmake_null_move(Position& pos, const StateInfo& state) noexcept {
+    pos.side_to_move ^= 1;
+    pos.castling_rights = state.castling_rights;
+    pos.ep_sq = state.ep_sq;
+    pos.halfmove_clock = state.halfmove_clock;
+    pos.fullmove_number = state.fullmove_number;
+    pos.plies_from_null = state.plies_from_null;
     pos.key = state.key;
 }
 
@@ -551,6 +593,8 @@ void do_move_copy(Position& pos, Move move) noexcept {
     const Square to = to_sq(move);
     const u16 flag = move_flag(move);
     const PieceType piece_type = type_of(piece_on(pos, from));
+
+    ++pos.plies_from_null;
 
     if (piece_type == PAWN || move_is_capture(move) || move_is_ep(move))
         pos.halfmove_clock = 0;

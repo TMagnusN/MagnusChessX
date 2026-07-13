@@ -685,6 +685,7 @@ struct SearchBenchResult {
 [[nodiscard]] SearchBenchResult benchmark_search_position(
     const Position& pos,
     memory::Memory& mem,
+    search::SearchSessionState& session_state,
     const search::SearchLimits& limits,
     std::ostream* out
 ) {
@@ -698,10 +699,22 @@ struct SearchBenchResult {
         PvTrackingStreamBuf pv_tracking_buf(out->rdbuf());
         std::ostream tracked_out(&pv_tracking_buf);
         result.search =
-            search::iterative_deepening(pos, mem, limits, &tracked_out);
+            search::iterative_deepening(
+                pos,
+                mem,
+                session_state,
+                limits,
+                &tracked_out
+            );
         tracked_out.flush();
     } else {
-        result.search = search::iterative_deepening(pos, mem, limits, nullptr);
+        result.search = search::iterative_deepening(
+            pos,
+            mem,
+            session_state,
+            limits,
+            nullptr
+        );
     }
 
     if (limits.recover_ponder_pv)
@@ -734,6 +747,7 @@ struct SearchBenchResult {
     std::size_t threads,
     std::ostream& out,
     search::SearchEvalKind eval_kind = search::SearchEvalKind::P2,
+    search::TtTrustStage tt_trust_stage = search::ACTIVE_TT_TRUST_STAGE,
     bool quiet = false
 ) {
     const int search_threads = std::clamp<int>(
@@ -765,9 +779,17 @@ struct SearchBenchResult {
         limits.report_info = false;
         limits.recover_ponder_pv = false;
         limits.eval_kind = eval_kind;
+        limits.tt_trust_stage = tt_trust_stage;
 
-        const SearchBenchResult res =
-            benchmark_search_position(bench_pos, mem, limits, nullptr);
+        search::SearchSessionState bench_session_state{};
+        bench_session_state.ensure_workers(static_cast<std::size_t>(search_threads));
+        const SearchBenchResult res = benchmark_search_position(
+            bench_pos,
+            mem,
+            bench_session_state,
+            limits,
+            nullptr
+        );
 
         total_nodes += res.search.nodes;
         total_seconds += res.seconds;
@@ -880,6 +902,7 @@ struct SearchBenchResult {
 
 struct UciSession {
     memory::Memory mem{};
+    search::SearchSessionState search_session_state{};
     Position pos{};
     PositionHistory position_history{};
     timeman::TimeManager time_manager{};
@@ -904,6 +927,9 @@ struct UciSession {
 
     UciSession() {
         memory::memory_init(mem, DEFAULT_UCI_HASH_MB, 8, 2);
+        search_session_state.ensure_workers(
+            static_cast<std::size_t>(DEFAULT_UCI_THREADS)
+        );
         // attack_init_backend deferred to first command that needs it.
         set_start_position(pos);
         position_refresh_key(pos, mem.tables);
@@ -1015,6 +1041,7 @@ struct UciSession {
 
     void reset_new_game() {
         memory::memory_clear_hash(mem);
+        search_session_state.new_game();
         set_start_position(pos);
         position_refresh_key(pos, mem.tables);
         clear_position_history(position_history);
@@ -1144,8 +1171,12 @@ struct UciSession {
         }
         else if (name == "Threads") {
             int parsed_threads = 0;
-            if (parse_int(value, parsed_threads))
+            if (parse_int(value, parsed_threads)) {
                 threads = std::clamp(parsed_threads, 1, MAX_UCI_THREADS);
+                search_session_state.ensure_workers(
+                    static_cast<std::size_t>(threads)
+                );
+            }
         }
         else if (name == "MultiPV") {
             int parsed_multipv = 0;
@@ -1549,7 +1580,13 @@ struct UciSession {
             PvTrackingStreamBuf pv_tracking_buf(std::cout.rdbuf());
             std::ostream tracked_out(&pv_tracking_buf);
             const search::SearchResult result =
-                search::iterative_deepening(root, mem, limits, &tracked_out);
+                search::iterative_deepening(
+                    root,
+                    mem,
+                    search_session_state,
+                    limits,
+                    &tracked_out
+                );
             tracked_out.flush();
 
             const std::string ponder = ponder_move_from_search_result(
@@ -1776,7 +1813,7 @@ struct UciSession {
 int run_bench(int argc, char** argv) {
     const auto print_usage = []() {
         std::cerr
-            << "usage: MagXTK-7SM2.exe bench [depth=12] [hash_mb=16] [threads=1]\n"
+            << "usage: MagXTK-7SM2.exe bench [depth=12] [hash_mb=16] [threads=1] [stage=A]\n"
             << "       MagXTK-7SM2.exe perft <depth>\n"
             << "       MagXTK-7SM2.exe spsa [json|csv]\n";
     };
@@ -1806,12 +1843,13 @@ int run_bench(int argc, char** argv) {
         int depth = DEFAULT_BENCH_DEPTH;
         int hash_mb = DEFAULT_UCI_HASH_MB;
         int thread_count = DEFAULT_UCI_THREADS;
+        search::TtTrustStage stage = search::ACTIVE_TT_TRUST_STAGE;
 
         const auto parse_optional = [&](int index, int& value) noexcept {
             return argc <= index || parse_int(argv[index], value);
         };
 
-        if (argc > 5 ||
+        if (argc > 6 ||
             !parse_optional(2, depth) ||
             !parse_optional(3, hash_mb) ||
             !parse_optional(4, thread_count) ||
@@ -1821,6 +1859,17 @@ int run_bench(int argc, char** argv) {
             thread_count <= 0) {
             print_usage();
             return 1;
+        }
+        if (argc > 5) {
+            const std::string_view stage_text{argv[5]};
+            if (stage_text == "A") stage = search::TtTrustStage::A;
+            else if (stage_text == "B") stage = search::TtTrustStage::B;
+            else if (stage_text == "C") stage = search::TtTrustStage::C;
+            else if (stage_text == "D") stage = search::TtTrustStage::D;
+            else {
+                print_usage();
+                return 1;
+            }
         }
 
         const int clamped_threads =
@@ -1842,6 +1891,7 @@ int run_bench(int argc, char** argv) {
             static_cast<std::size_t>(clamped_threads),
             std::cout,
             search::SearchEvalKind::P2,
+            stage,
             true
         );
         memory::memory_free(mem);
