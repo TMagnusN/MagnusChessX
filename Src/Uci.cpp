@@ -93,6 +93,7 @@ namespace magnus {
 
 namespace {
 
+constexpr std::string_view ENGINE_NAME = "MagXTK-7SM2";
 constexpr int DEFAULT_UCI_HASH_MB = 16;
 constexpr int DEFAULT_UCI_THREADS = 1;
 constexpr int MAX_UCI_THREADS = 512;
@@ -973,12 +974,12 @@ struct UciSession {
     }
 
     void emit_banner(std::ostream& out) const {
-        out << "MagnusChessX Thinking 1.0.0 by Theodore Magnus Øen Nidhar";
+        out << ENGINE_NAME << " by Theodore Magnus Øen Nidhar";
         out << std::endl;
     }
 
     void emit_uci_id(std::ostream& out) const {
-        out << "id name MagnusChessX Thinking 1.0.0\n";
+        out << "id name " << ENGINE_NAME << '\n';
 
         out << "id author Theodore Magnus Øen Nidhar\n";
         out << "option name Hash type spin default " << DEFAULT_UCI_HASH_MB
@@ -1775,9 +1776,9 @@ struct UciSession {
 int run_bench(int argc, char** argv) {
     const auto print_usage = []() {
         std::cerr
-            << "usage: MagnusChessXThinking bench [depth=12] [hash_mb=16] [threads=1]\n"
-            << "       MagnusChessXThinking perft <depth>\n"
-            << "       MagnusChessXThinking spsa [json|csv]\n";
+            << "usage: MagXTK-7SM2.exe bench [depth=12] [hash_mb=16] [threads=1]\n"
+            << "       MagXTK-7SM2.exe perft <depth>\n"
+            << "       MagXTK-7SM2.exe spsa [json|csv]\n";
     };
 
     if (argc <= 1) {
