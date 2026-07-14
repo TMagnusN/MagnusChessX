@@ -243,9 +243,11 @@ namespace {
 }
 
 [[nodiscard]] constexpr int score_to_tt(int score, int ply) noexcept {
-    return is_win(score) ? score + ply
-         : is_loss(score) ? score - ply
-                          : score;
+    if (score >= VALUE_MATE_IN_MAX_PLY)
+        return score + ply;
+    if (score <= VALUE_MATED_IN_MAX_PLY)
+        return score - ply;
+    return score;
 }
 
 [[nodiscard]] constexpr int score_from_tt(
@@ -257,19 +259,15 @@ namespace {
         return VALUE_NONE;
 
     const int remaining = std::max(0, 100 - halfmove_clock);
-    if (is_win(score)) {
-        if ((score >= VALUE_MATE_IN_MAX_PLY && VALUE_MATE - score > remaining)
-            || VALUE_TB - score > remaining) {
+    if (score >= VALUE_MATE_IN_MAX_PLY) {
+        if (VALUE_MATE - score > remaining)
             return VALUE_TB_WIN_IN_MAX_PLY - 1;
-        }
         return score - ply;
     }
 
-    if (is_loss(score)) {
-        if ((score <= VALUE_MATED_IN_MAX_PLY && VALUE_MATE + score > remaining)
-            || VALUE_TB + score > remaining) {
+    if (score <= VALUE_MATED_IN_MAX_PLY) {
+        if (VALUE_MATE + score > remaining)
             return VALUE_TB_LOSS_IN_MAX_PLY + 1;
-        }
         return score + ply;
     }
 
@@ -281,13 +279,9 @@ static_assert(
     score_from_tt(score_to_tt(VALUE_MATE - 23, 7), 19, 0)
     == VALUE_MATE - 35
 );
-static_assert(
-    score_from_tt(score_to_tt(VALUE_TB - 11, 7), 19, 0)
-    == VALUE_TB - 23
-);
+static_assert(score_to_tt(VALUE_TB - 11, 7) == VALUE_TB - 11);
+static_assert(score_to_tt(-VALUE_TB + 11, 7) == -VALUE_TB + 11);
 static_assert(!is_decisive(score_from_tt(VALUE_MATE - 5, 0, 96)));
-static_assert(!is_decisive(score_from_tt(VALUE_TB - 8, 0, 93)));
-static_assert(score_from_tt(VALUE_TB - 7, 0, 93) == VALUE_TB - 7);
 
 #ifndef MAGNUS_SEARCH_OBS
 #define MAGNUS_SEARCH_OBS 0
@@ -1486,12 +1480,13 @@ struct Searcher {
         int ply,
         bool use_rule50
     ) noexcept {
+        (void)ply;
         const int value = static_cast<int>(wdl);
         const int draw_threshold = use_rule50 ? 1 : 0;
         if (value < -draw_threshold)
-            return -VALUE_TB + ply;
+            return -VALUE_TB;
         if (value > draw_threshold)
-            return VALUE_TB - ply;
+            return VALUE_TB;
         return 2 * value * draw_threshold;
     }
 
