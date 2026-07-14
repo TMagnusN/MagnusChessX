@@ -120,6 +120,20 @@ void test_depth_transitions() {
     );
 }
 
+void test_tt_trust_required_gap() {
+    constexpr int base_gap = 53;
+
+    expect(search::tt_trust_required_gap(base_gap, 511) == 53, "+511 truncates to zero");
+    expect(search::tt_trust_required_gap(base_gap, -511) == 53, "-511 truncates to zero");
+    expect(search::tt_trust_required_gap(base_gap, 512) == 52, "+512 lowers gap by one");
+    expect(search::tt_trust_required_gap(base_gap, -512) == 54, "-512 raises gap by one");
+    expect(search::tt_trust_required_gap(base_gap, 4096) == 45, "+4096 reaches clamp");
+    expect(search::tt_trust_required_gap(base_gap, -4096) == 61, "-4096 reaches clamp");
+    expect(search::tt_trust_required_gap(base_gap, 8192) == 45, "+8192 stays clamped");
+    expect(search::tt_trust_required_gap(base_gap, -8192) == 61, "-8192 stays clamped");
+    expect(search::tt_trust_required_gap(1, 8192) == 1, "required gap floor");
+}
+
 void test_persistent_worker_slots() {
     Position pos{};
     pos.side_to_move = WHITE;
@@ -146,6 +160,7 @@ int main() {
     test_plies_from_null();
     test_shuffling_truth_table();
     test_depth_transitions();
+    test_tt_trust_required_gap();
     test_persistent_worker_slots();
     std::cout << "search reference state and depth transitions ok\n";
     return 0;

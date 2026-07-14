@@ -4163,11 +4163,10 @@ struct Searcher {
 #endif
                 const int base_gap = 53
                     + 75 * static_cast<int>(ss.tt_pv && !pv_node);
-                const int trust_adjustment =
+                const int required_gap =
                     limits.tt_trust_stage >= TtTrustStage::C
-                    ? std::clamp(tt_trust_before / 512, -8, 8)
-                    : 0;
-                const int required_gap = std::max(1, base_gap - trust_adjustment);
+                    ? tt_trust_required_gap(base_gap, tt_trust_before)
+                    : base_gap;
                 const int singular_beta = probed_tt_score
                     - required_gap * node_depth / 60;
                 const int singular_depth = (node_depth - 1) / 2;

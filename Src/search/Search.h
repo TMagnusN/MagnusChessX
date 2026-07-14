@@ -115,6 +115,17 @@ private:
 };
 
 [[nodiscard]] std::size_t tt_move_trust_bucket(int trust) noexcept;
+[[nodiscard]] constexpr int tt_trust_required_gap(
+    int base_gap,
+    int pre_update_trust
+) noexcept {
+    const int raw_adjustment = pre_update_trust / 512;
+    const int adjustment = raw_adjustment < -8
+        ? -8
+        : raw_adjustment > 8 ? 8 : raw_adjustment;
+    const int required_gap = base_gap - adjustment;
+    return required_gap < 1 ? 1 : required_gap;
+}
 [[nodiscard]] bool stockfish_capture_stage(Move move) noexcept;
 [[nodiscard]] bool stockfish_is_shuffling(
     Move move,
@@ -216,7 +227,7 @@ enum class TtTrustStage : std::uint8_t {
 
 // The normal engine runs one fixed experiment stage. Other stages are selected
 // only by the standalone bench command, never through the UCI protocol.
-inline constexpr TtTrustStage ACTIVE_TT_TRUST_STAGE = TtTrustStage::B;
+inline constexpr TtTrustStage ACTIVE_TT_TRUST_STAGE = TtTrustStage::C;
 
 #ifndef MAGNUS_SEARCH_ENABLE_ASPIRATION
 #define MAGNUS_SEARCH_ENABLE_ASPIRATION 1
