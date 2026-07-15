@@ -53,9 +53,14 @@ SOFTWARE.
 #include "Search.h"
 #include "syzygy/Syzygy.h"
 #include "Time.h"
+#include "Tuning.h"
 
 #ifdef _WIN32
 #include <windows.h>
+#endif
+
+#ifndef MAGNUS_TUNING_UCI_OPTIONS
+#define MAGNUS_TUNING_UCI_OPTIONS 0
 #endif
 
 /*
@@ -88,6 +93,7 @@ namespace magnus {
 
 namespace {
 
+constexpr std::string_view ENGINE_NAME = "MagXTK-7SM2";
 constexpr int DEFAULT_UCI_HASH_MB = 16;
 constexpr int DEFAULT_UCI_THREADS = 1;
 constexpr int MAX_UCI_THREADS = 512;
@@ -428,12 +434,6 @@ void display_position(const Position& pos, std::ostream& out) {
     return line.size() > command.size() ? line.substr(command.size() + 1) : std::string_view{};
 }
 
-[[nodiscard]] inline long long steady_now_ms() noexcept {
-    return std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::steady_clock::now().time_since_epoch()
-    ).count();
-}
-
 [[nodiscard]] bool parse_u64(std::string_view sv, u64& value) noexcept {
     const char* first = sv.data();
     const char* last = sv.data() + sv.size();
@@ -685,6 +685,7 @@ struct SearchBenchResult {
 [[nodiscard]] SearchBenchResult benchmark_search_position(
     const Position& pos,
     memory::Memory& mem,
+    search::SearchSessionState& session_state,
     const search::SearchLimits& limits,
     std::ostream* out
 ) {
@@ -698,10 +699,22 @@ struct SearchBenchResult {
         PvTrackingStreamBuf pv_tracking_buf(out->rdbuf());
         std::ostream tracked_out(&pv_tracking_buf);
         result.search =
-            search::iterative_deepening(pos, mem, limits, &tracked_out);
+            search::iterative_deepening(
+                pos,
+                mem,
+                session_state,
+                limits,
+                &tracked_out
+            );
         tracked_out.flush();
     } else {
-        result.search = search::iterative_deepening(pos, mem, limits, nullptr);
+        result.search = search::iterative_deepening(
+            pos,
+            mem,
+            session_state,
+            limits,
+            nullptr
+        );
     }
 
     if (limits.recover_ponder_pv)
@@ -734,6 +747,7 @@ struct SearchBenchResult {
     std::size_t threads,
     std::ostream& out,
     search::SearchEvalKind eval_kind = search::SearchEvalKind::P2,
+    search::TtTrustStage tt_trust_stage = search::ACTIVE_TT_TRUST_STAGE,
     bool quiet = false
 ) {
     const int search_threads = std::clamp<int>(
@@ -765,9 +779,17 @@ struct SearchBenchResult {
         limits.report_info = false;
         limits.recover_ponder_pv = false;
         limits.eval_kind = eval_kind;
+        limits.tt_trust_stage = tt_trust_stage;
 
-        const SearchBenchResult res =
-            benchmark_search_position(bench_pos, mem, limits, nullptr);
+        search::SearchSessionState bench_session_state{};
+        bench_session_state.ensure_workers(static_cast<std::size_t>(search_threads));
+        const SearchBenchResult res = benchmark_search_position(
+            bench_pos,
+            mem,
+            bench_session_state,
+            limits,
+            nullptr
+        );
 
         total_nodes += res.search.nodes;
         total_seconds += res.seconds;
@@ -880,10 +902,11 @@ struct SearchBenchResult {
 
 struct UciSession {
     memory::Memory mem{};
+    search::SearchSessionState search_session_state{};
     Position pos{};
     PositionHistory position_history{};
     timeman::TimeManager time_manager{};
-    bool enable_ponder = false;
+    bool enable_ponder = true;
     bool full_pv = false;
     bool use_msv_smp = false;
     bool msv_info = false;
@@ -900,13 +923,13 @@ struct UciSession {
     std::atomic<bool> search_running{false};
     std::atomic<bool> ponder_search{false};
     std::atomic<bool> pondering{false};
-    std::atomic<bool> ponder_hit_received{false};
-    std::atomic<int> ponder_time_offset_ms{0};
-    std::atomic<long long> search_start_ms{0};
     std::thread search_thread;
 
     UciSession() {
         memory::memory_init(mem, DEFAULT_UCI_HASH_MB, 8, 2);
+        search_session_state.ensure_workers(
+            static_cast<std::size_t>(DEFAULT_UCI_THREADS)
+        );
         // attack_init_backend deferred to first command that needs it.
         set_start_position(pos);
         position_refresh_key(pos, mem.tables);
@@ -963,9 +986,6 @@ struct UciSession {
             search_thread.join();
         ponder_search.store(false, std::memory_order_release);
         pondering.store(false, std::memory_order_release);
-        ponder_hit_received.store(false, std::memory_order_release);
-        ponder_time_offset_ms.store(0, std::memory_order_release);
-        search_start_ms.store(0, std::memory_order_release);
         search_running.store(false, std::memory_order_release);
     }
 
@@ -976,25 +996,16 @@ struct UciSession {
             return;
         }
 
-        const long long start_ms = search_start_ms.load(std::memory_order_acquire);
-        const long long now_ms = steady_now_ms();
-        const long long elapsed = start_ms > 0 ? std::max(0LL, now_ms - start_ms) : 0LL;
-        const int offset_ms = static_cast<int>(
-            std::min<long long>(elapsed, std::numeric_limits<int>::max())
-        );
-
-        ponder_time_offset_ms.store(offset_ms, std::memory_order_release);
-        ponder_hit_received.store(true, std::memory_order_release);
         pondering.store(false, std::memory_order_release);
     }
 
     void emit_banner(std::ostream& out) const {
-        out << "MagnusChessX Thinking 0.1 by the Theodore Magnus Øen Nidhar";
+        out << ENGINE_NAME << " by Theodore Magnus Øen Nidhar";
         out << std::endl;
     }
 
     void emit_uci_id(std::ostream& out) const {
-        out << "id name MagnusChessX Thinking 0.1\n";
+        out << "id name " << ENGINE_NAME << '\n';
 
         out << "id author Theodore Magnus Øen Nidhar\n";
         out << "option name Hash type spin default " << DEFAULT_UCI_HASH_MB
@@ -1010,7 +1021,7 @@ struct UciSession {
             << timeman::DEFAULT_MOVE_OVERHEAD_MS
             << " min " << timeman::MIN_MOVE_OVERHEAD_MS
             << " max " << timeman::MAX_MOVE_OVERHEAD_MS << "\n";
-        out << "option name Ponder type check default false\n";
+        out << "option name Ponder type check default true\n";
         out << "option name SyzygyPath type string default <empty>\n";
         out << "option name SyzygyProbeDepth type spin default "
             << syzygy::DEFAULT_PROBE_DEPTH
@@ -1022,11 +1033,15 @@ struct UciSession {
             << " min " << syzygy::MIN_PROBE_LIMIT
             << " max " << syzygy::MAX_PROBE_LIMIT << "\n";
         out << "option name MNUEfile type string default " << mnue::kEmbeddedP2Filename << "\n";
+#if MAGNUS_TUNING_UCI_OPTIONS
+        search::tuning::emit_uci_options(out);
+#endif
         out << "uciok" << std::endl;
     }
 
     void reset_new_game() {
         memory::memory_clear_hash(mem);
+        search_session_state.new_game();
         set_start_position(pos);
         position_refresh_key(pos, mem.tables);
         clear_position_history(position_history);
@@ -1156,8 +1171,12 @@ struct UciSession {
         }
         else if (name == "Threads") {
             int parsed_threads = 0;
-            if (parse_int(value, parsed_threads))
+            if (parse_int(value, parsed_threads)) {
                 threads = std::clamp(parsed_threads, 1, MAX_UCI_THREADS);
+                search_session_state.ensure_workers(
+                    static_cast<std::size_t>(threads)
+                );
+            }
         }
         else if (name == "MultiPV") {
             int parsed_multipv = 0;
@@ -1243,6 +1262,13 @@ struct UciSession {
 
             if (!ensure_eval_loaded(&out))
                 out << "info string eval unavailable\n";
+        }
+        else {
+            int parsed_tuning_value = 0;
+            if (parse_int(value, parsed_tuning_value) &&
+                search::tuning::set_int_param(name, parsed_tuning_value)) {
+                memory::memory_clear_hash(mem);
+            }
         }
     }
 
@@ -1479,6 +1505,7 @@ struct UciSession {
     }
 
     void handle_go(std::string_view line, std::ostream& out) {
+        const auto go_start = std::chrono::steady_clock::now();
         ensure_attack_ready();
         if (!ensure_search_eval_ready(out, "info string mnue unavailable, search aborted"))
             return;
@@ -1533,7 +1560,6 @@ struct UciSession {
         limits.multipv = multipv;
         limits.stop = &stop_requested;
         limits.pondering = &pondering;
-        limits.ponder_time_offset_ms = &ponder_time_offset_ms;
         limits.thread_count = threads;
         limits.thread_id = 0;
         limits.report_info = true;
@@ -1546,9 +1572,7 @@ struct UciSession {
         stop_requested.store(false, std::memory_order_release);
         ponder_search.store(limits.ponder, std::memory_order_release);
         pondering.store(limits.ponder, std::memory_order_release);
-        ponder_hit_received.store(false, std::memory_order_release);
-        ponder_time_offset_ms.store(0, std::memory_order_release);
-        search_start_ms.store(steady_now_ms(), std::memory_order_release);
+        limits.start_time = go_start;
 
         const Position root = pos;
         search_running.store(true, std::memory_order_release);
@@ -1556,7 +1580,13 @@ struct UciSession {
             PvTrackingStreamBuf pv_tracking_buf(std::cout.rdbuf());
             std::ostream tracked_out(&pv_tracking_buf);
             const search::SearchResult result =
-                search::iterative_deepening(root, mem, limits, &tracked_out);
+                search::iterative_deepening(
+                    root,
+                    mem,
+                    search_session_state,
+                    limits,
+                    &tracked_out
+                );
             tracked_out.flush();
 
             const std::string ponder = ponder_move_from_search_result(
@@ -1572,9 +1602,6 @@ struct UciSession {
             std::cout << std::endl;
             ponder_search.store(false, std::memory_order_release);
             pondering.store(false, std::memory_order_release);
-            ponder_hit_received.store(false, std::memory_order_release);
-            ponder_time_offset_ms.store(0, std::memory_order_release);
-            search_start_ms.store(0, std::memory_order_release);
             search_running.store(false, std::memory_order_release);
         });
     }
@@ -1646,6 +1673,33 @@ struct UciSession {
 
         if (command_starts_with(line, "setoption")) {
             handle_setoption(out, line);
+            return true;
+        }
+
+        if (line == "spsa" || line == "spsa json") {
+            search::tuning::emit_spsa(out);
+            return true;
+        }
+
+        if (line == "spsa csv") {
+            search::tuning::emit_spsa_csv(out);
+            return true;
+        }
+
+        if (line == "tuning reset") {
+            search::tuning::reset();
+            memory::memory_clear_hash(mem);
+            out << "info string tuning reset\n";
+            return true;
+        }
+
+        if (line == "tuning json") {
+            search::tuning::emit_spsa_json(out);
+            return true;
+        }
+
+        if (line == "tuning") {
+            search::tuning::emit_values(out);
             return true;
         }
 
@@ -1759,8 +1813,9 @@ struct UciSession {
 int run_bench(int argc, char** argv) {
     const auto print_usage = []() {
         std::cerr
-            << "usage: MagnusChessXThinking bench [depth=12] [hash_mb=16] [threads=1]\n"
-            << "       MagnusChessXThinking perft <depth>\n";
+            << "usage: MagXTK-7SM2.exe bench [depth=12] [hash_mb=16] [threads=1] [stage=A]\n"
+            << "       MagXTK-7SM2.exe perft <depth>\n"
+            << "       MagXTK-7SM2.exe spsa [json|csv]\n";
     };
 
     if (argc <= 1) {
@@ -1769,16 +1824,32 @@ int run_bench(int argc, char** argv) {
     }
 
     const std::string_view command{argv[1]};
+    if (command == "spsa") {
+        if (argc == 2 || std::string_view(argv[2]) == "json") {
+            search::tuning::emit_spsa_json(std::cout);
+            return 0;
+        }
+
+        if (argc == 3 && std::string_view(argv[2]) == "csv") {
+            search::tuning::emit_spsa_csv(std::cout);
+            return 0;
+        }
+
+        print_usage();
+        return 1;
+    }
+
     if (command == "bench") {
         int depth = DEFAULT_BENCH_DEPTH;
         int hash_mb = DEFAULT_UCI_HASH_MB;
         int thread_count = DEFAULT_UCI_THREADS;
+        search::TtTrustStage stage = search::ACTIVE_TT_TRUST_STAGE;
 
         const auto parse_optional = [&](int index, int& value) noexcept {
             return argc <= index || parse_int(argv[index], value);
         };
 
-        if (argc > 5 ||
+        if (argc > 6 ||
             !parse_optional(2, depth) ||
             !parse_optional(3, hash_mb) ||
             !parse_optional(4, thread_count) ||
@@ -1788,6 +1859,17 @@ int run_bench(int argc, char** argv) {
             thread_count <= 0) {
             print_usage();
             return 1;
+        }
+        if (argc > 5) {
+            const std::string_view stage_text{argv[5]};
+            if (stage_text == "A") stage = search::TtTrustStage::A;
+            else if (stage_text == "B") stage = search::TtTrustStage::B;
+            else if (stage_text == "C") stage = search::TtTrustStage::C;
+            else if (stage_text == "D") stage = search::TtTrustStage::D;
+            else {
+                print_usage();
+                return 1;
+            }
         }
 
         const int clamped_threads =
@@ -1809,6 +1891,7 @@ int run_bench(int argc, char** argv) {
             static_cast<std::size_t>(clamped_threads),
             std::cout,
             search::SearchEvalKind::P2,
+            stage,
             true
         );
         memory::memory_free(mem);

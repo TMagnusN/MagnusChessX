@@ -10,6 +10,7 @@ pub struct Cli {
     pub chunk_shuffle_seed: u64,
     pub chunk_virtual_epochs: usize,
     pub chunk_sample: Option<usize>,
+    pub chunk_resample_on_exhaustion: bool,
     pub output_dir: PathBuf,
     pub export: PathBuf,
     pub date: u64,
@@ -34,6 +35,7 @@ impl Default for Cli {
             chunk_shuffle_seed: DEFAULT_CHUNK_SHUFFLE_SEED,
             chunk_virtual_epochs: DEFAULT_CHUNK_VIRTUAL_EPOCHS,
             chunk_sample: None,
+            chunk_resample_on_exhaustion: false,
             output_dir: PathBuf::from(DEFAULT_OUTPUT_DIR),
             export: PathBuf::from(DEFAULT_NET),
             date: 0,
@@ -99,6 +101,7 @@ impl Cli {
                             .map_err(|_| "invalid --chunk-sample".to_string())?,
                     );
                 }
+                "--chunk-resample-on-exhaustion" => cli.chunk_resample_on_exhaustion = true,
                 "--output-dir" => cli.output_dir = PathBuf::from(next_value(&mut args, &arg)?),
                 "--export" => cli.export = PathBuf::from(next_value(&mut args, &arg)?),
                 "--batch-size" => {
@@ -156,6 +159,7 @@ impl Cli {
          --chunk-shuffle-seed N    virtual chunk shuffle seed; default 1\n\
          --chunk-virtual-epochs N  virtual chunk schedule passes; default 1024\n\
          --chunk-sample N          chunks sampled without replacement per virtual pass\n\
+         --chunk-resample-on-exhaustion rebuild a new virtual chunk pool after the current one is exhausted\n\
          --dry-run                 inspect data and run one train step\n\
          --model-summary           print model/size summary\n\
          --attack-fake-quant       enable Attack-table STE fake quantisation\n\

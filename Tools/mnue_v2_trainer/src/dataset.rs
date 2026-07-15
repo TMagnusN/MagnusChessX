@@ -8,6 +8,7 @@ use bullet_compiler::tensor::TValue;
 use bullet_lib::value::loader::{DataLoader as BulletDataLoader, SfBinpackLoader};
 use bullet_trainer::run::dataloader::{DataLoader, DataLoadingError, PreparedBatchHost};
 use bulletformat::{BulletFormat, ChessBoard};
+use mnue_binpack_loader::ResamplingSfBinpackLoader;
 use mnue_data_schedule::InputDataKind;
 
 use crate::{
@@ -30,6 +31,11 @@ pub struct Sample {
 pub struct DatasetConfig {
     pub kind: InputDataKind,
     pub paths: Vec<PathBuf>,
+    pub chunk_paths: Vec<PathBuf>,
+    pub chunk_resample_on_exhaustion: bool,
+    pub chunk_shuffle_seed: u64,
+    pub chunk_virtual_epochs: usize,
+    pub chunk_sample: Option<usize>,
     pub accepted_limit: u64,
     pub wdl_blend: f32,
     pub score_scale: f32,
@@ -122,15 +128,7 @@ where
             }
         }
         InputDataKind::SfBinpack => {
-            let path_strings = path_strings(&config.paths);
-            let path_refs = path_strings.iter().map(String::as_str).collect::<Vec<_>>();
-            let loader = SfBinpackLoader::new_concat_multiple(
-                &path_refs,
-                binpack_buffer_mb(config.accepted_limit),
-                binpack_threads(),
-                accept_all_binpack,
-            );
-            loader.map_chunks(0, |chunk: &[ChessBoard]| {
+            let mut map_binpack_chunk = |chunk: &[ChessBoard], stats: &mut DatasetStats| {
                 for board in chunk {
                     if config.accepted_limit > 0 && stats.accepted >= config.accepted_limit {
                         return true;
@@ -163,7 +161,34 @@ where
                     }
                 }
                 false
-            });
+            };
+
+            if config.chunk_resample_on_exhaustion {
+                let loader = ResamplingSfBinpackLoader::new(
+                    path_strings(&config.chunk_paths),
+                    binpack_buffer_mb(config.accepted_limit),
+                    binpack_threads(),
+                    accept_all_binpack,
+                    config.chunk_shuffle_seed,
+                    config.chunk_virtual_epochs,
+                    config.chunk_sample,
+                );
+                loader.map_chunks(0, |chunk: &[ChessBoard]| {
+                    map_binpack_chunk(chunk, &mut stats)
+                });
+            } else {
+                let path_strings = path_strings(&config.paths);
+                let path_refs = path_strings.iter().map(String::as_str).collect::<Vec<_>>();
+                let loader = SfBinpackLoader::new_concat_multiple(
+                    &path_refs,
+                    binpack_buffer_mb(config.accepted_limit),
+                    binpack_threads(),
+                    accept_all_binpack,
+                );
+                loader.map_chunks(0, |chunk: &[ChessBoard]| {
+                    map_binpack_chunk(chunk, &mut stats)
+                });
+            }
         }
     }
     Ok(stats)
@@ -174,6 +199,11 @@ pub fn count_valid(paths: &[PathBuf], limit: u64) -> io::Result<DatasetStats> {
         &DatasetConfig {
             kind: InputDataKind::Direct,
             paths: paths.to_vec(),
+            chunk_paths: Vec::new(),
+            chunk_resample_on_exhaustion: false,
+            chunk_shuffle_seed: 1,
+            chunk_virtual_epochs: 1,
+            chunk_sample: None,
             accepted_limit: limit,
             wdl_blend: 0.75,
             score_scale: 400.0,

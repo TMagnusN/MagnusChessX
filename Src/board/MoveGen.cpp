@@ -1009,6 +1009,31 @@ inline Move* generate_pawn_captures(
     return generate_pawn_moves<PieceMoveMode::CaptureNonEvasions>(pos, mem, info, out);
 }
 
+inline Move* generate_quiet_queen_promotions_non_evasions(
+    const Position& pos,
+    const GenInfo& info,
+    Move* out
+) noexcept {
+    const Color side = info.us;
+    Bitboard pawns = pieces_bb(pos, side, PAWN);
+    const int promotion_from_rank = side == WHITE ? 6 : 1;
+    const int push_delta = side == WHITE ? 8 : -8;
+
+    while (pawns) {
+        const Square from = lsb_sq(pawns);
+        pawns &= pawns - 1;
+
+        if (rank_of(from) != promotion_from_rank)
+            continue;
+
+        const Square to = static_cast<Square>(static_cast<int>(from) + push_delta);
+        if ((info.occupied & bb_of(to)) == 0ULL)
+            *out++ = make_move(from, to, MOVE_PROMO_Q);
+    }
+
+    return out;
+}
+
 inline Move* generate_ep_non_evasions(
     const Position& pos,
     const memory::Memory& mem,
@@ -2003,9 +2028,11 @@ Move* generate_pseudo_captures(
     const GenInfo& info,
     Move* out
 ) noexcept {
-    return info.in_check
-        ? generate_evasions_with_info(pos, mem, info, out)
-        : generate_capture_non_evasions_with_info(pos, mem, info, out);
+    if (info.in_check)
+        return generate_evasions_with_info(pos, mem, info, out);
+
+    out = generate_capture_non_evasions_with_info(pos, mem, info, out);
+    return generate_quiet_queen_promotions_non_evasions(pos, info, out);
 }
 
 Move* generate_pseudo_captures(

@@ -1,6 +1,6 @@
 <div align="center">
 
-  <img src="Assets/Images/logo.png" alt="MagnusChessX Thinking logo" width="760">
+  <img src="Assets/Images/logo.png" alt="MagnusChess family logo" width="760">
 
   [![C++20][cpp-badge]][repo-link]
   [![UCI][uci-badge]][repo-link]
@@ -12,9 +12,9 @@
 
 MagnusChessX is a [C++20][cpp20-link] [UCI][uci-protocol-link] chess engine by Theodore Magnus &Oslash;en Nidhar, developed in its current form since 2026-03-24.
 
-Its current playable line, **Thinking**, is a low-strength reference engine with rudimentary positional understanding and limited practical competitiveness. That description is intentional: MagnusChessX is not presented as a mature tournament engine, but as a compact engine body for testing search behavior, evaluation design, and MNUE architecture changes without burying every experiment under release polish.
+The official engine name is **MagXTK-7SM2**. It is the first official release in the MagXTK series, its software release version is **1.0.0**, and it is derived from the MagnusChess family.
 
-MagnusChessX communicates over the [Universal Chess Interface][uci-protocol-link], which means you can talk to it in the terminal,
+MagXTK-7SM2 is a low-strength reference engine with rudimentary positional understanding and limited practical competitiveness. It communicates over the [Universal Chess Interface][uci-protocol-link], which means you can talk to it in the terminal,
 or install it into a UCI-compatible graphical user interface, like [En Croissant](https://encroissant.org/download) or [Nibbler](https://github.com/rooklift/nibbler).
 
 The default network line is P2 MNUE, maintained separately in [MagnusMNUE](https://github.com/TMagnusN/MagnusMNUE). P2 is the normal evaluation path used by ordinary search. MagnusChessX also contains an experimental X2-K16-pawn MNUE path, used to test a less conventional layout with separated piece, attack-edge, and pawn-pair feature families. X2 is included because its structure is interesting, not because it is advertised as the current strength target.

@@ -409,7 +409,8 @@ private:
         return search::move_to_uci(result.pv[1]);
     }
 
-    const memory::TTProbe probe = memory::tt_probe(mem.tt, after_best.key);
+    const memory::TTProbe probe =
+        memory::tt_probe(mem.tt, memory::tt_key(after_best, mem.tables));
     const Move tt_move = probe.hit ? static_cast<Move>(probe.data.move) : Move(0);
     if (legal_move_exists(after_best, mem, tt_move))
         return search::move_to_uci(tt_move);

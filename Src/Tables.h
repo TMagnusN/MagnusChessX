@@ -31,7 +31,10 @@ SOFTWARE.
 #pragma once
 
 #include <array>
+#include <cassert>
+#include <cstddef>
 #include <cstdint>
+#include <utility>
 
 #include "Types.h"
 
@@ -49,8 +52,34 @@ struct ZobristTables {
     Key piece[COLOR_NB][PIECE_NB][SQ_NB]{};
     Key castling[16]{};
     Key ep_file[8]{};
+    Key rule50[16]{};
     Key side = 0;
 };
+
+constexpr std::size_t CUCKOO_REPETITION_SIZE = 8192;
+
+struct CuckooRepetitionTables {
+    Key keys[CUCKOO_REPETITION_SIZE]{};
+    Move moves[CUCKOO_REPETITION_SIZE]{};
+    bool valid = false;
+};
+
+[[nodiscard]] constexpr std::size_t cuckoo_repetition_h1(Key key) noexcept {
+    return static_cast<std::size_t>((key >> 32) & 0x1FFFULL);
+}
+
+[[nodiscard]] constexpr std::size_t cuckoo_repetition_h2(Key key) noexcept {
+    return static_cast<std::size_t>((key >> 48) & 0x1FFFULL);
+}
+
+[[nodiscard]] constexpr Move encode_cuckoo_repetition_move(
+    Square from,
+    Square to
+) noexcept {
+    return static_cast<Move>(
+        (to & 63) | ((from & 63) << 6)
+    );
+}
 
 // Small constexpr math helpers used while building geometry tables.
 constexpr int abs_i(int x) noexcept {
@@ -71,6 +100,33 @@ constexpr int manhattan_distance(Square a, Square b) noexcept {
     const int df = abs_i(file_of(a) - file_of(b));
     const int dr = abs_i(rank_of(a) - rank_of(b));
     return df + dr;
+}
+
+[[nodiscard]] constexpr bool attacks_on_empty_board(
+    PieceType piece_type,
+    Square from,
+    Square to
+) noexcept {
+    if (from == to)
+        return false;
+
+    const int df = abs_i(file_of(from) - file_of(to));
+    const int dr = abs_i(rank_of(from) - rank_of(to));
+
+    switch (piece_type) {
+        case KNIGHT:
+            return (df == 1 && dr == 2) || (df == 2 && dr == 1);
+        case BISHOP:
+            return df == dr;
+        case ROOK:
+            return df == 0 || dr == 0;
+        case QUEEN:
+            return df == 0 || dr == 0 || df == dr;
+        case KING:
+            return df <= 1 && dr <= 1;
+        default:
+            return false;
+    }
 }
 
 inline u64 splitmix64(u64& x) noexcept {
@@ -281,6 +337,7 @@ struct Tables {
     std::array<std::array<u8, SQ_NB>, SQ_NB> manhattan  = make_manhattan();
 
     ZobristTables zobrist{};
+    CuckooRepetitionTables cuckoo_repetition{};
     bool initialized = false;
 };
 
@@ -302,6 +359,83 @@ inline void tables_init_zobrist(ZobristTables& z, u64 seed = 0xC0FFEE1234567890U
         z.ep_file[i] = splitmix64(x);
 
     z.side = splitmix64(x);
+
+    (void)splitmix64(x);
+    z.rule50[0] = 0;
+    for (int i = 1; i < 16; ++i)
+        z.rule50[i] = splitmix64(x);
+}
+
+inline bool cuckoo_repetition_insert(
+    CuckooRepetitionTables& cuckoo,
+    Key key,
+    Move move
+) noexcept {
+    std::size_t slot = cuckoo_repetition_h1(key);
+
+    for (std::size_t n = 0; n < CUCKOO_REPETITION_SIZE * 4; ++n) {
+        std::swap(cuckoo.keys[slot], key);
+        std::swap(cuckoo.moves[slot], move);
+
+        if (move == Move(0))
+            return true;
+
+        const std::size_t h1 = cuckoo_repetition_h1(key);
+        const std::size_t h2 = cuckoo_repetition_h2(key);
+        slot = slot == h1 ? h2 : h1;
+    }
+
+    return false;
+}
+
+inline bool tables_init_cuckoo_repetition(Tables& t) noexcept {
+    CuckooRepetitionTables& cuckoo = t.cuckoo_repetition;
+    cuckoo = CuckooRepetitionTables{};
+
+    constexpr PieceType pieces[] = {
+        KNIGHT,
+        BISHOP,
+        ROOK,
+        QUEEN,
+        KING
+    };
+
+    int count = 0;
+    for (const PieceType piece_type : pieces) {
+        for (int color = 0; color < COLOR_NB; ++color) {
+            for (int from = 0; from < SQ_NB; ++from) {
+                for (int to = from + 1; to < SQ_NB; ++to) {
+                    if (!attacks_on_empty_board(
+                            piece_type,
+                            static_cast<Square>(from),
+                            static_cast<Square>(to))) {
+                        continue;
+                    }
+
+                    const Key key =
+                        t.zobrist.piece[color][piece_type][from] ^
+                        t.zobrist.piece[color][piece_type][to] ^
+                        t.zobrist.side;
+                    const Move move = encode_cuckoo_repetition_move(
+                        static_cast<Square>(from),
+                        static_cast<Square>(to)
+                    );
+
+                    if (!cuckoo_repetition_insert(cuckoo, key, move)) {
+                        assert(false && "Failed to initialize cuckoo repetition table");
+                        cuckoo.valid = false;
+                        return false;
+                    }
+
+                    ++count;
+                }
+            }
+        }
+    }
+
+    cuckoo.valid = count == 3668;
+    assert(cuckoo.valid && "Unexpected cuckoo repetition table entry count");
+    return cuckoo.valid;
 }
 
 // Geometry tables are now consteval-populated (see make_* factories above),
@@ -309,6 +443,7 @@ inline void tables_init_zobrist(ZobristTables& z, u64 seed = 0xC0FFEE1234567890U
 inline void tables_init(Tables& t, u64 zobrist_seed = 0xC0FFEE1234567890ULL) noexcept {
     if (!t.initialized) {
         tables_init_zobrist(t.zobrist, zobrist_seed);
+        tables_init_cuckoo_repetition(t);
         t.initialized = true;
     }
 }

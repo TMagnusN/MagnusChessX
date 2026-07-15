@@ -298,7 +298,7 @@ bool see_ge_fast(
         if (attacker == ROOK || attacker == QUEEN)
             attackers |= rook_attacks(mem, to, occupied) & rook_like;
 
-        balance = see_piece_value[attacker] - balance;
+        balance = -balance - 1 - see_piece_value[attacker];
         side = static_cast<Color>(side ^ 1);
 
         if (balance >= 0) {
