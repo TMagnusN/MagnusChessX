@@ -41,7 +41,7 @@ struct Position;
  *   1. 硬限制 (hard_time_ms)：無論如何都不會超過的絕對上限
  *   2. 軟限制 (soft_time_ms)：時間管理演算法計算的最佳停止點
  *
- * 初始 soft/hard 預算由 Stockfish 風格公式計算；搜尋期間的
+ * 初始 soft/hard 預算由時間管理公式計算；搜尋期間的
  * falling-eval、深度因子與最佳著法不穩定性調整位於 Search.cpp。
  */
 namespace magnus::timeman {

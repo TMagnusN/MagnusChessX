@@ -102,20 +102,20 @@ void test_depth_transitions() {
     const int extended_node_depth = original_node_depth + 1;
 
     expect(
-        search::stockfish_singular_child_depth(move_base_depth, 1) == 10,
+        search::singular_child_depth(move_base_depth, 1) == 10,
         "current TT child depth is frozen"
     );
     expect(extended_node_depth - 1 == 10, "later move inherits +1");
     expect(
-        search::stockfish_depth_after_alpha_improvement(extended_node_depth, false) == 9,
+        search::depth_after_alpha_improvement(extended_node_depth, false) == 9,
         "alpha improvement applies -2"
     );
     expect(
-        search::stockfish_depth_after_alpha_improvement(14, false) == 14,
+        search::depth_after_alpha_improvement(14, false) == 14,
         "alpha depth upper boundary"
     );
     expect(
-        search::stockfish_fail_high_softbound(150, 100, 9) == 145,
+        search::fail_high_softbound(150, 100, 9) == 145,
         "fail-high softbound uses final depth"
     );
 }

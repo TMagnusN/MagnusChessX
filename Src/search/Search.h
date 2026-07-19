@@ -61,8 +61,6 @@ namespace magnus::search {
 constexpr std::size_t TT_MOVE_TRUST_SIZE = 8192;
 constexpr int TT_MOVE_TRUST_LIMIT = 8192;
 constexpr std::size_t TT_MOVE_TRUST_BUCKETS = 8;
-inline constexpr char STOCKFISH_SINGULAR_REFERENCE_COMMIT[] =
-    "cb3d4ee9b47d0c5aae855b12379378ea1439675c"; // sf_18
 
 struct TtTrustBucketCounters {
     u64 searched = 0;
@@ -134,13 +132,13 @@ private:
     Move move_at_ply_minus_4,
     int ply
 ) noexcept;
-[[nodiscard]] constexpr int stockfish_singular_child_depth(
+[[nodiscard]] constexpr int singular_child_depth(
     int move_base_depth,
     int extension
 ) noexcept {
     return move_base_depth + extension;
 }
-[[nodiscard]] constexpr int stockfish_depth_after_alpha_improvement(
+[[nodiscard]] constexpr int depth_after_alpha_improvement(
     int node_depth,
     bool decisive
 ) noexcept {
@@ -148,7 +146,7 @@ private:
         ? node_depth - 2
         : node_depth;
 }
-[[nodiscard]] constexpr int stockfish_fail_high_softbound(
+[[nodiscard]] constexpr int fail_high_softbound(
     int best_value,
     int beta,
     int node_depth
@@ -158,7 +156,7 @@ private:
 
 /*
  * 搜尋層全局常數：
- *   MAX_PLY            — Stockfish-style search stack ply budget
+ *   MAX_PLY            — search stack ply budget
  *   MAX_SEARCH_DEPTH   — maximum completed root depth reported by iterative deepening
  *   MAX_GAME_HISTORY   — 最大對局歷史記錄數，用於重複局面檢測
  */
@@ -372,7 +370,7 @@ struct SearchLimits {
     int hard_time_ms = 0;               // 硬時間限制（毫秒），強制停止
     bool ponder = false;                // 是否為沉思模式（對手時間內搜尋）
     bool infinite = false;              // 是否為無限搜尋模式
-    bool use_time_management = false;   // 是否啟用 Stockfish 風格時間管理
+    bool use_time_management = false;   // 是否啟用時間管理
     bool recover_ponder_pv = false;     // Ponder 開啟時，必要時 full-window 補主變例第二手
     int syzygy_probe_depth = 1;          // 同等最大子力數時開始探測的最小深度
     int syzygy_probe_limit = 0;          // 最大 Syzygy 子力數，0 = 停用

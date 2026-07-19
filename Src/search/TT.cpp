@@ -363,10 +363,10 @@ void tt_save(
 int tt_hashfull(const TT& tt, int max_age) noexcept {
     if (!tt.clusters || tt.cluster_count == 0) return 0;
 
-    constexpr int STOCKFISH_SAMPLE_CLUSTERS = 1000;
+    constexpr int SAMPLE_CLUSTERS = 1000;
     const int n = static_cast<int>(std::min<std::size_t>(
         tt.cluster_count,
-        static_cast<std::size_t>(STOCKFISH_SAMPLE_CLUSTERS)
+        static_cast<std::size_t>(SAMPLE_CLUSTERS)
     ));
 
     if (n == 0)

@@ -636,8 +636,6 @@ template<class Layout>
 template<class Layout>
 using Accumulator = std::array<i16, Layout::HiddenSize>;
 
-// Stockfish refreshes stale NNUE accumulators from a king-indexed cache.
-// P2-family nets use the same idea with MNUE's coarser input bucket as the key.
 template<class Layout>
 struct P2RefreshEntry {
     Accumulator<Layout> accumulation{};

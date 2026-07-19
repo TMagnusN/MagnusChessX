@@ -93,7 +93,7 @@ namespace magnus {
 
 namespace {
 
-constexpr std::string_view ENGINE_NAME = "MagXTK-7SM2";
+constexpr std::string_view ENGINE_NAME = "MagXTK-14SM1";
 constexpr int DEFAULT_UCI_HASH_MB = 16;
 constexpr int DEFAULT_UCI_THREADS = 1;
 constexpr int MAX_UCI_THREADS = 512;
@@ -1813,9 +1813,9 @@ struct UciSession {
 int run_bench(int argc, char** argv) {
     const auto print_usage = []() {
         std::cerr
-            << "usage: MagXTK-7SM2.exe bench [depth=12] [hash_mb=16] [threads=1] [stage=A]\n"
-            << "       MagXTK-7SM2.exe perft <depth>\n"
-            << "       MagXTK-7SM2.exe spsa [json|csv]\n";
+            << "usage: MagXTK-14SM1.exe bench [depth=12] [hash_mb=16] [threads=1] [stage=A]\n"
+            << "       MagXTK-14SM1.exe perft <depth>\n"
+            << "       MagXTK-14SM1.exe spsa [json|csv]\n";
     };
 
     if (argc <= 1) {

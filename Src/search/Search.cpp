@@ -57,7 +57,7 @@ SOFTWARE.
  * 1. 反覆加深 (Iterative Deepening)
  *    - 從深度 1 逐步增加到最大深度
  *    - 每層使用 aspiration window 加速收斂
- *    - Stockfish 風格的時間管理決定何時停止
+ *    - 動態時間管理決定何時停止
  *
  * 2. 主變例搜尋 (PVS — Principal Variation Search)
  *    - 第一個著法用完整窗口搜索
@@ -4350,7 +4350,7 @@ struct Searcher {
             make_search_move(pos, move, st);
             memory::tt_prefetch(mem.tt, memory::tt_key(pos, mem.tables));
 
-            const int new_depth = stockfish_singular_child_depth(
+            const int new_depth = singular_child_depth(
                 move_base_depth,
                 move_extension
             );
@@ -4574,7 +4574,7 @@ struct Searcher {
                     && node_depth > 2
                     && node_depth < 14
                     && !is_decisive(score)) {
-                    node_depth = stockfish_depth_after_alpha_improvement(
+                    node_depth = depth_after_alpha_improvement(
                         node_depth,
                         false
                     );
@@ -4679,7 +4679,7 @@ struct Searcher {
             && best_score >= beta
             && !is_decisive(best_score)
             && !is_decisive(alpha)) {
-            node_value = stockfish_fail_high_softbound(
+            node_value = fail_high_softbound(
                 best_score,
                 beta,
                 node_depth
@@ -5194,7 +5194,7 @@ void initialize_iteration_time_state(
             limits.time_state->previous_time_reduction;
 }
 
-[[nodiscard]] inline bool use_stockfish_style_time_management(
+[[nodiscard]] inline bool use_adaptive_time_management(
     const SearchLimits& limits
 ) noexcept {
     return limits.use_time_management &&
@@ -5237,10 +5237,10 @@ void initialize_iteration_time_state(
     }
 
     // Fixed-time grace: simple depth-boundary stop for go movetime.
-    // When the sf-style clock is disabled but a hard limit exists, avoid
+    // When adaptive time management is disabled but a hard limit exists, avoid
     // launching a new depth with essentially zero remaining budget
     // (the hard-limit poll will kill it before a single move is searched).
-    if (!use_stockfish_style_time_management(searcher.limits) &&
+    if (!use_adaptive_time_management(searcher.limits) &&
         searcher.limits.hard_time_ms > 0 &&
         time_state.last_depth_time_ms > 0) {
         const int elapsed = searcher.timed_elapsed_ms();
@@ -5251,7 +5251,7 @@ void initialize_iteration_time_state(
             should_stop = true;
     }
 
-    if (use_stockfish_style_time_management(searcher.limits)) {
+    if (use_adaptive_time_management(searcher.limits)) {
         time_state.total_best_move_changes /= 2.0;
         if (searcher.limits.time_signals != nullptr) {
             time_state.total_best_move_changes +=
