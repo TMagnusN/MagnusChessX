@@ -126,8 +126,8 @@ private:
     const int required_gap = base_gap - adjustment;
     return required_gap < 1 ? 1 : required_gap;
 }
-[[nodiscard]] bool stockfish_capture_stage(Move move) noexcept;
-[[nodiscard]] bool stockfish_is_shuffling(
+[[nodiscard]] bool capture_stage(Move move) noexcept;
+[[nodiscard]] bool is_shuffling(
     Move move,
     const Position& pos,
     Move move_at_ply_minus_2,

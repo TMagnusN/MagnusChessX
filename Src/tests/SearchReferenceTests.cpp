@@ -78,7 +78,7 @@ void test_shuffling_truth_table() {
     const Move move2 = magnus::make_move(1, 2, MOVE_QUIET);
     const Move move = magnus::make_move(2, 3, MOVE_QUIET);
     const auto shuffling = [&](Move candidate, int ply = 20) {
-        return search::stockfish_is_shuffling(candidate, pos, move2, move4, ply);
+        return search::is_shuffling(candidate, pos, move2, move4, ply);
     };
 
     expect(shuffling(move), "two-leg return");

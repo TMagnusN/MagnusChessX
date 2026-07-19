@@ -106,21 +106,19 @@ std::size_t tt_move_trust_bucket(int trust) noexcept {
     return TT_MOVE_TRUST_BUCKETS - 1;
 }
 
-bool stockfish_capture_stage(Move move) noexcept {
+bool capture_stage(Move move) noexcept {
     return move_is_capture(move)
         || (move_is_promotion(move) && promo_piece(move) == QUEEN);
 }
 
-bool stockfish_is_shuffling(
+bool is_shuffling(
     Move move,
     const Position& pos,
     Move move2,
     Move move4,
     int ply
 ) noexcept {
-    // Frozen reference: Stockfish 18 commit
-    // cb3d4ee9b47d0c5aae855b12379378ea1439675c.
-    if (stockfish_capture_stage(move) || pos.halfmove_clock < 10)
+    if (capture_stage(move) || pos.halfmove_clock < 10)
         return false;
     if (pos.plies_from_null <= 6 || ply < 20)
         return false;
@@ -537,17 +535,27 @@ inline void append_uci_score(
             score > 0 ? TB_CP - distance : -TB_CP + distance;
         out << "score cp " << display_score;
         append_uci_score_bound(out, bound);
-        out << " wdl "
-            << (score > 0 ? "1000 0 0" : "0 0 1000");
         return;
     }
 
     const int display_score = mnue::search_score_to_cp(score, root);
     out << "score cp " << display_score;
     append_uci_score_bound(out, bound);
+}
 
-    const mnue::WdlTriplet wdl = mnue::search_score_to_wdl(score, root);
-    out << " wdl " << wdl.win << ' ' << wdl.draw << ' ' << wdl.loss;
+[[nodiscard]] inline mnue::WdlTriplet compute_uci_wdl(
+    int score,
+    const Position& root
+) noexcept {
+    if (score >= VALUE_MATE - MAX_PLY)
+        return {1000, 0, 0};
+    if (score <= -VALUE_MATE + MAX_PLY)
+        return {0, 0, 1000};
+    if (std::abs(score) >= VALUE_TB - MAX_PLY && std::abs(score) <= VALUE_TB)
+        return score > 0
+            ? mnue::WdlTriplet{1000, 0, 0}
+            : mnue::WdlTriplet{0, 0, 1000};
+    return mnue::search_score_to_wdl(score, root);
 }
 
 [[nodiscard]] inline bool root_msv_enabled(
@@ -1842,7 +1850,7 @@ struct Searcher {
     ) const noexcept {
         const Move move2 = search_stack[ply - 2].current_move;
         const Move move4 = search_stack[ply - 4].current_move;
-        return stockfish_is_shuffling(move, pos, move2, move4, ply);
+        return ::magnus::search::is_shuffling(move, pos, move2, move4, ply);
     }
 
     [[nodiscard]] inline SingularContext make_singular_context(
@@ -4194,7 +4202,7 @@ struct Searcher {
                 if (singular_score < singular_beta) {
                     const int corr_val_adj =
                         std::abs(correction) * 131072 / 230673;
-                    const bool tt_capture = stockfish_capture_stage(move);
+                    const bool tt_capture = capture_stage(move);
                     const int double_margin =
                         -4
                         + 199 * static_cast<int>(pv_node)
@@ -6206,9 +6214,14 @@ void emit_iteration_info(
     const u64 time_ms = static_cast<u64>(seconds * 1000.0);
     const int hashfull = memory::tt_hashfull(local_mem.tt);
 
-    stream << "info depth " << depth
-           << " seldepth " << current.seldepth
-           << " multipv " << multipv_index << ' ';
+    stream << "info multipv " << multipv_index
+           << " depth " << depth
+           << " seldepth " << current.seldepth;
+    {
+        const mnue::WdlTriplet wdl = compute_uci_wdl(current.score, local_root);
+        stream << " wdl " << wdl.win << ' ' << wdl.draw << ' ' << wdl.loss;
+    }
+    stream << ' ';
     append_uci_score(
         stream,
         current.score,
