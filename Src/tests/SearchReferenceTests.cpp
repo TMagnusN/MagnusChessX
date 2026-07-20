@@ -2,6 +2,7 @@
 #include "board/MoveGen.h"
 #include "board/Position.h"
 #include "search/Search.h"
+#include "search/See.h"
 
 #include <cstdlib>
 #include <iostream>
@@ -134,6 +135,78 @@ void test_tt_trust_required_gap() {
     expect(search::tt_trust_required_gap(1, 8192) == 1, "required gap floor");
 }
 
+void test_see_ignores_pinned_recapture() {
+    memory::Memory mem{};
+    memory::memory_init(mem, 1, 1, 1);
+
+    Position pos{};
+    set_start_position(pos);
+    position_refresh_key(pos, mem.tables);
+
+    constexpr Move moves[] = {
+        magnus::make_move(12, 28, MOVE_DOUBLE_PUSH), // e2e4
+        magnus::make_move(51, 35, MOVE_DOUBLE_PUSH), // d7d5
+        magnus::make_move(1, 18, MOVE_QUIET),        // b1c3
+        magnus::make_move(57, 42, MOVE_QUIET),       // b8c6
+        magnus::make_move(18, 12, MOVE_QUIET),       // c3e2
+        magnus::make_move(35, 27, MOVE_QUIET),       // d5d4
+        magnus::make_move(6, 21, MOVE_QUIET),        // g1f3
+        magnus::make_move(52, 36, MOVE_DOUBLE_PUSH), // e7e5
+        magnus::make_move(10, 18, MOVE_QUIET),       // c2c3
+        magnus::make_move(54, 46, MOVE_QUIET),       // g7g6
+        magnus::make_move(12, 29, MOVE_QUIET),       // e2f4
+        magnus::make_move(58, 44, MOVE_QUIET),       // c8e6
+        magnus::make_move(5, 33, MOVE_QUIET),        // f1b5
+        magnus::make_move(27, 19, MOVE_QUIET)        // d4d3
+    };
+    for (Move move : moves) {
+        StateInfo state{};
+        make_move(pos, move, mem.tables, state);
+    }
+
+    const Move capture = magnus::make_move(21, 36, MOVE_CAPTURE); // f3e5
+    expect(legal(pos, mem, capture), "SEE regression capture is legal");
+    expect(
+        search::see_value_fast(pos, mem, capture) == 100,
+        "SEE excludes pinned c6 knight recapture"
+    );
+    expect(
+        search::see_ge_fast(pos, mem, capture, 0),
+        "SEE threshold excludes pinned c6 knight recapture"
+    );
+
+    memory::memory_free(mem);
+}
+
+void test_see_pinned_piece_still_guards_against_king() {
+    memory::Memory mem{};
+    memory::memory_init(mem, 1, 1, 1);
+
+    Position pos{};
+    position_clear(pos);
+    position_put_piece(pos, WHITE, KING, 4);   // e1
+    position_put_piece(pos, WHITE, ROOK, 5);   // f1, pinned by h1 queen
+    position_put_piece(pos, WHITE, BISHOP, 46); // g6
+    position_put_piece(pos, BLACK, QUEEN, 7);  // h1
+    position_put_piece(pos, BLACK, PAWN, 53);  // f7
+    position_put_piece(pos, BLACK, KING, 60);  // e8
+    pos.side_to_move = WHITE;
+    position_refresh_key(pos, mem.tables);
+
+    const Move capture = magnus::make_move(46, 53, MOVE_CAPTURE); // g6f7+
+    expect(legal(pos, mem, capture), "SEE guarded-king regression capture is legal");
+    expect(
+        search::see_value_fast(pos, mem, capture) == 100,
+        "pinned rook still guards f7 from black king"
+    );
+    expect(
+        search::see_ge_fast(pos, mem, capture, 0),
+        "SEE threshold honors pinned attack for king legality"
+    );
+
+    memory::memory_free(mem);
+}
+
 void test_persistent_worker_slots() {
     Position pos{};
     pos.side_to_move = WHITE;
@@ -161,6 +234,8 @@ int main() {
     test_shuffling_truth_table();
     test_depth_transitions();
     test_tt_trust_required_gap();
+    test_see_ignores_pinned_recapture();
+    test_see_pinned_piece_still_guards_against_king();
     test_persistent_worker_slots();
     std::cout << "search reference state and depth transitions ok\n";
     return 0;

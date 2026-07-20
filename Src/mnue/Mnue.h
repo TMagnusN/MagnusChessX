@@ -118,6 +118,10 @@ inline constexpr const char* kEmbeddedP2Filename = MNUE_EMBEDDED_FILENAME;
 
 class P2AccumulatorStack {
 public:
+    // One state is kept for the root position and one for every searched ply.
+    // Search.cpp enforces its ply budget against this capacity at compile time.
+    static constexpr std::size_t Capacity = 256;
+
     P2AccumulatorStack() noexcept;
     ~P2AccumulatorStack();
 

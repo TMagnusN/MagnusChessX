@@ -88,6 +88,11 @@ SOFTWARE.
 
 namespace magnus::search {
 
+static_assert(
+    static_cast<std::size_t>(MAX_PLY) <= mnue::P2AccumulatorStack::Capacity,
+    "P2 accumulator stack must cover the complete search ply budget"
+);
+
 namespace {
 
 [[nodiscard]] std::size_t tt_move_trust_index(const Position& pos) noexcept {

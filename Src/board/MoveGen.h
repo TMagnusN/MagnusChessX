@@ -216,6 +216,14 @@ Bitboard attackers_to_color(
     Bitboard occupied
 ) noexcept;
 
+void pinners_and_pinned_bb(
+    const Position& pos,
+    const memory::Memory& mem,
+    Color us,
+    Bitboard& pinners,
+    Bitboard& pinned
+) noexcept;
+
 Bitboard pinned_bb(
     const Position& pos,
     const memory::Memory& mem,

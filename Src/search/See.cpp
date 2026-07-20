@@ -170,11 +170,24 @@ int see_value_fast(
 
     const Bitboard bishop_like = piece_bb[BISHOP] | piece_bb[QUEEN];
     const Bitboard rook_like = piece_bb[ROOK] | piece_bb[QUEEN];
+    Bitboard pinners[COLOR_NB]{};
+    Bitboard pinned[COLOR_NB]{};
+    bool pin_info_ready[COLOR_NB]{};
     Bitboard attackers = attackers_to(pos, mem, to, occupied);
     Color side = static_cast<Color>(us ^ 1);
 
     while (true) {
-        const Bitboard side_attackers = (attackers & occupied) & color_bb[side];
+        Bitboard side_attackers = (attackers & occupied) & color_bb[side];
+        if (side_attackers != 0ULL) {
+            if (!pin_info_ready[side]) {
+                pinners_and_pinned_bb(pos, mem, side, pinners[side], pinned[side]);
+                pin_info_ready[side] = true;
+            }
+
+            // A pinned recapturer is unavailable while its original pinner remains.
+            if ((pinners[side] & occupied) != 0ULL)
+                side_attackers &= ~pinned[side];
+        }
         if (side_attackers == 0ULL || depth + 1 >= SEE_MAX_SWAPS)
             break;
 
@@ -278,11 +291,24 @@ bool see_ge_fast(
 
     const Bitboard bishop_like = piece_bb[BISHOP] | piece_bb[QUEEN];
     const Bitboard rook_like = piece_bb[ROOK] | piece_bb[QUEEN];
+    Bitboard pinners[COLOR_NB]{};
+    Bitboard pinned[COLOR_NB]{};
+    bool pin_info_ready[COLOR_NB]{};
     Bitboard attackers = attackers_to(pos, mem, to, occupied);
 
     Color side = static_cast<Color>(us ^ 1);
     while (true) {
-        const Bitboard side_attackers = (attackers & occupied) & color_bb[side];
+        Bitboard side_attackers = (attackers & occupied) & color_bb[side];
+        if (side_attackers != 0ULL) {
+            if (!pin_info_ready[side]) {
+                pinners_and_pinned_bb(pos, mem, side, pinners[side], pinned[side]);
+                pin_info_ready[side] = true;
+            }
+
+            // A pinned recapturer is unavailable while its original pinner remains.
+            if ((pinners[side] & occupied) != 0ULL)
+                side_attackers &= ~pinned[side];
+        }
         if (side_attackers == 0ULL)
             break;
 
@@ -297,6 +323,16 @@ bool see_ge_fast(
             attackers |= bishop_attacks(mem, to, occupied) & bishop_like;
         if (attacker == ROOK || attacker == QUEEN)
             attackers |= rook_attacks(mem, to, occupied) & rook_like;
+
+        if (attacker == KING) {
+            const Color opponent = static_cast<Color>(side ^ 1);
+            const bool destination_attacked =
+                (attackers & occupied & color_bb[opponent]) != 0ULL;
+
+            // Pinned pieces still attack squares for king-move legality.  Stop
+            // here instead of passing them through the recapturer pin filter.
+            return destination_attacked ? side != us : side == us;
+        }
 
         balance = -balance - 1 - see_piece_value[attacker];
         side = static_cast<Color>(side ^ 1);

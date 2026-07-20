@@ -209,8 +209,18 @@ Bitboard pinners_bb(
 ) noexcept {
     Bitboard pinners = 0ULL;
     Bitboard pinned = 0ULL;
-    query_compute_pinners_and_pinned(pos, mem, us, pinners, pinned);
+    pinners_and_pinned_bb(pos, mem, us, pinners, pinned);
     return pinners;
+}
+
+void pinners_and_pinned_bb(
+    const Position& pos,
+    const memory::Memory& mem,
+    Color us,
+    Bitboard& pinners,
+    Bitboard& pinned
+) noexcept {
+    query_compute_pinners_and_pinned(pos, mem, us, pinners, pinned);
 }
 
 Bitboard pinned_bb(
@@ -220,7 +230,7 @@ Bitboard pinned_bb(
 ) noexcept {
     Bitboard pinners = 0ULL;
     Bitboard pinned = 0ULL;
-    query_compute_pinners_and_pinned(pos, mem, us, pinners, pinned);
+    pinners_and_pinned_bb(pos, mem, us, pinners, pinned);
     return pinned;
 }
 
