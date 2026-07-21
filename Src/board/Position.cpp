@@ -34,11 +34,6 @@ incremental evaluation, and optional incremental Zobrist hashing consistent
 through the same small set of mutator helpers.
 */
 
-/* ===== 繁體中文註釋 =====
- * 本檔案是 MagnusChessX Thinking 西洋棋引擎的一部分。
- * 實作詳情請參閱對應的 .h 標頭檔案。
- */
-
 namespace magnus {
 
 namespace {
@@ -121,12 +116,12 @@ inline void remove_piece_from_caches(
 } // namespace
 
 /*
- * 棋盤狀態操作實作
- * 維護信箱 (mailbox)、位元棋盤、國王快取、增量評估、Zobrist 鍵值的一致性
- * make_move/unmake_move — 走棋/悔棋（含狀態恢復）
- * do_move_copy — 在新副本上走棋（用於根節點）
- * position_put_piece/position_remove_piece — 低層棋子操作
- * position_refresh_key — 重新計算 Zobrist 鍵值
+ * Board state operation implementation
+ * Keeps mailbox, bitboards, king cache, incremental evaluation, and Zobrist key consistent
+ * make_move/unmake_move — play/unplay a move (with state restoration)
+ * do_move_copy — play on a fresh copy (for root nodes)
+ * position_put_piece/position_remove_piece — low-level piece operations
+ * position_refresh_key — recompute the Zobrist key
  */
 void position_clear(Position& pos) noexcept {
     // Reset every representation so the position can be rebuilt from scratch.

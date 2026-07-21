@@ -44,11 +44,6 @@ This file implements the slider attack backends. It can fall back to classical
 ray scans, use dense lookup tables, or exploit BMI2/PEXT when available.
 */
 
-/* ===== 繁體中文註釋 =====
- * 本檔案是 MagnusChessX Thinking 西洋棋引擎的一部分。
- * 實作詳情請參閱對應的 .h 標頭檔案。
- */
-
 namespace magnus {
 
 namespace {
@@ -395,11 +390,11 @@ bool query_cpu_bmi2_support() noexcept {
 #endif
 
 /*
- * 攻擊生成實作
- * init_slider_tables() — 構建稠密索引滑子攻擊表（主教+城堡）
- * set_occupancy_from_index() — 從索引還原佔位位元棋盤
- * dense_index_from_occupied() — 從佔位計算稠密索引（PEXT 或乘法雜湊）
- * attack_auto_select_backend() — 自動選擇最快可用的攻擊後端
+ * Attack generation implementation
+ * init_slider_tables() — build dense-indexed slider attack tables (bishop + rook)
+ * set_occupancy_from_index() — reconstruct occupancy bitboard from index
+ * dense_index_from_occupied() — compute dense index from occupancy (PEXT or multiplicative hash)
+ * attack_auto_select_backend() — auto-select fastest available attack backend
  */
 void init_slider_table(
     std::array<SliderAttackEntry, 64>& entries,

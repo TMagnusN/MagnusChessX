@@ -25,35 +25,35 @@ SOFTWARE.
 #pragma once
 
 /*
- * NNUE 網路佈局常數 — 在評估器和 Position 狀態之間共享
+ * NNUE Network Layout Constants — shared between evaluator and Position state
  *
- * Chess768 雙視角編碼方案：
- *   輸入層：768 個特徵
- *     = 2 個顏色視角 × 6 種棋子類型 × 64 個方格
- *     每個 (perspective, piece_type, square) 三元組對應一個特徵索引
+ * Chess768 dual-perspective encoding scheme:
+ *   Input layer: 768 features
+ *     = 2 color perspectives x 6 piece types x 64 squares
+ *     Each (perspective, piece_type, square) triple maps to one feature index
  *
- *   隱藏層：128 個神經元
- *     = 雙視角累加器的大小
- *     Position 結構體為每個視角維護一個累加器（共 2×128 = 256 個 i16）
+ *   Hidden layer: 128 neurons
+ *     = size of the dual-perspective accumulators
+ *     The Position struct maintains one accumulator per perspective (2x128 = 256 i16 total)
  *
- *   激活函數：Clipped ReLU → Square
+ *   Activation function: Clipped ReLU --> Square
  *     screlu(x) = clamp(x, 0, 255)^2
- *     輸入裁剪到 [0, 255]，輸出平方（最大 65025）
+ *     Input clipped to [0, 255], output squared (max 65025)
  *
- *   網路架構：768 → 128 → 1
- *     輸入特徵權重：w0[768][128]（i16，每個特徵對 128 個隱藏神經元的貢獻）
- *     隱藏層偏置：b0[128]（i16）
- *     輸出權重：w1[256]（i16，前半部為我方視角權重，後半部為對方視角權重）
- *     輸出偏置：b1（i16）
+ *   Network architecture: 768 --> 128 --> 1
+ *     Input feature weights: w0[768][128] (i16, per-feature contribution to 128 hidden neurons)
+ *     Hidden-layer bias: b0[128] (i16)
+ *     Output weights: w1[256] (i16, first half = own-perspective weights, second half = opponent-perspective weights)
+ *     Output bias: b1 (i16)
  *
- *   AVX2 加速：
- *     每次處理 16 個隱藏神經元（128/16 = 8 輪）
- *     累加器對齊到 64 位元組以支援 SIMD 載入
+ *   AVX2 acceleration:
+ *     Processes 16 hidden neurons at a time (128/16 = 8 rounds)
+ *     Accumulators aligned to 64 bytes for SIMD loads
  */
 namespace magnus::nnue {
 
-constexpr int kInputSize = 768;         // Chess768 編碼的輸入特徵總數
-constexpr int kHiddenSize = 128;        // 隱藏層神經元數量（必須為 16 的倍數以支援 AVX2）
-constexpr int kActivationClip = 255;    // screlu 激活函數的裁剪上限
+constexpr int kInputSize = 768;         // Total input features for Chess768 encoding
+constexpr int kHiddenSize = 128;        // Number of hidden-layer neurons (must be a multiple of 16 for AVX2)
+constexpr int kActivationClip = 255;    // Upper clipping bound for the screlu activation function
 
 } // namespace magnus::nnue

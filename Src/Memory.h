@@ -22,11 +22,6 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
 
-/* ===== ANNOTATED: 繁體中文註釋已添加 =====
- * 本檔案是 MagnusChessX Thinking 西洋棋引擎的一部分。
- * 詳細說明請參閱對應的 .cpp 實作檔案。
- */
-
 
 #pragma once
 
@@ -154,11 +149,11 @@ inline void material_table_resize_mb(MaterialTable& t, std::size_t mb) {
 }
 
 /*
- * Memory — 共享引擎狀態的頂層容器
- * 包含：Tables(幾何/攻擊/Zobrist)、TT(置換表)、PawnTable(兵快取)、MaterialTable(材料快取)
- * memory_init() 一次性初始化所有子表
- * memory_new_search() 在每次新搜索前遞增 TT 世代編號
- * memory_clear_hash() 清空所有雜湊表。
+ * Memory — Top-level container for shared engine state
+ * Contains: Tables (geometry/attack/Zobrist), TT (transposition table), PawnTable (pawn cache), MaterialTable (material cache)
+ * memory_init() initializes all sub-tables once
+ * memory_new_search() increments the TT generation counter before each new search
+ * memory_clear_hash() clears all hash tables.
  */
 struct Memory {
     // Shared immutable tables plus mutable hash storage used by search.

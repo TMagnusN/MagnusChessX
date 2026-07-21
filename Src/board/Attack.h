@@ -22,11 +22,6 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
 
-/* ===== ANNOTATED: 繁體中文註釋已添加 =====
- * 本檔案是 MagnusChessX Thinking 西洋棋引擎的一部分。
- * 詳細說明請參閱對應的 .cpp 實作檔案。
- */
-
 
 #pragma once
 
@@ -126,10 +121,10 @@ inline std::uint8_t manhattan_distance(
 }
 
 /*
- * 攻擊生成後端 — AttackBackendKind：CLASSICAL(掃描) / TABLE(稠密查表) / MAGIC / PEXT(BMI2)
- * SliderAttackEntry：滑子攻擊表的元數據（遮罩/偏移/相關位元/移位）
- * 跳子/騎士/國王攻擊直接從 Tables 查表（O(1)）
- * 主教/城堡攻擊根據後端選擇：經典掃描 / 稠密索引表 / PEXT 硬體加速
+ * Attack generation backends — AttackBackendKind: CLASSICAL(scan) / TABLE(dense lookup) / MAGIC / PEXT(BMI2)
+ * SliderAttackEntry: metadata for slider attack tables (mask / offset / relevant bits / shift)
+ * Knight/king attacks are looked up directly from Tables (O(1))
+ * Bishop/rook attacks select based on backend: classical scan / dense index table / PEXT hardware acceleration
  */
 enum class AttackBackendKind : int {
     CLASSICAL = 0,

@@ -50,40 +50,42 @@ SOFTWARE.
 #include "syzygy/Syzygy.h"
 
 /*
- * MagnusChessX Thinking 搜尋引擎核心 — Search Engine Core
+ * MagnusChessX Thinking Search Engine Core
  *
- * 採用經典的迭代加深 + 主變例搜尋 (PVS) 架構，包含以下關鍵組件：
+ * Uses a classic Iterative Deepening + Principal Variation Search (PVS) architecture
+ * with the following key components:
  *
- * 1. 反覆加深 (Iterative Deepening)
- *    - 從深度 1 逐步增加到最大深度
- *    - 每層使用 aspiration window 加速收斂
- *    - 動態時間管理決定何時停止
+ * 1. Iterative Deepening
+ *    - Incrementally increases depth from 1 to the maximum
+ *    - Uses aspiration windows at each ply to accelerate convergence
+ *    - Dynamic time management determines when to stop
  *
- * 2. 主變例搜尋 (PVS — Principal Variation Search)
- *    - 第一個著法用完整窗口搜索
- *    - 後續著法用零窗口 (null window) 搜索
- *    - 零窗口 fail-high 時觸發完整窗口 re-search
+ * 2. PVS — Principal Variation Search
+ *    - First move searched with a full window
+ *    - Subsequent moves searched with a null window
+ *    - Null-window fail-high triggers a full-window re-search
  *
- * 3. 靜態搜索 (Quiescence Search)
- *    - 只搜索戰術著法（捕獲、升變）
- *    - stand-pat 原則：靜態評估已達 beta 即可截斷
- *    - delta pruning 跳過無法提升 alpha 的捕獲
+ * 3. Quiescence Search
+ *    - Only searches tactical moves (captures, promotions)
+ *    - Stand-pat principle: cut if static evaluation already reaches beta
+ *    - Delta pruning skips captures that cannot raise alpha
  *
- * 4. 剪枝技術
- *    - 空步剪枝 (NMP) — 給對方免費回合測試截斷
- *    - 反向虛無剪枝 (RFP) — 靜態評估遠高於 beta 時提前截斷
- *    - 剃刀剪枝 (Razoring) — 淺層評估極差時跳至 qsearch
- *    - 機率截斷 (ProbCut) — 用淺層搜索預測深層截斷
- *    - 奇異延伸 (Singular Extension) — TT 著法為唯一好著時延伸
- *    - 延遲著法減免 (LMR) — 排序靠後的著法用縮減深度搜索
- *    - 歷史啟發式剪枝 — 歷史分數極差的安靜著法直接跳過
- *    - 捕獲 futility 剪枝 — 淺層捕獲不可能達到 alpha 時跳過
+ * 4. Pruning Techniques
+ *    - Null Move Pruning (NMP) — give opponent a free turn to test cutoff
+ *    - Reverse Futility Pruning (RFP) — cut early when static eval is far above beta
+ *    - Razoring — jump to qsearch when shallow eval is extremely poor
+ *    - ProbCut — use shallow searches to predict deep cutoffs
+ *    - Singular Extension — extend when TT move is the only good move
+ *    - Late Move Reduction (LMR) — search later moves with reduced depth
+ *    - History Heuristic Pruning — skip quiet moves with very poor history scores
+ *    - Capture Futility Pruning — skip shallow captures that cannot reach alpha
  *
- * 5. 並行搜索 (Lazy SMP)
- *    - 多線程各自獨立搜索，共享置換表
- *    - 加權投票選擇最佳著法
+ * 5. Parallel Search (Lazy SMP)
+ *    - Multiple threads search independently, sharing the transposition table
+ *    - Weighted voting selects the best move
  *
- * 核心結構體 Searcher 封裝了單次迭代加深會話的所有可變狀態。
+ * The core Searcher struct encapsulates all mutable state for a single iterative
+ * deepening session.
  */
 
 namespace magnus::search {

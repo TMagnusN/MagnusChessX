@@ -31,27 +31,28 @@ SOFTWARE.
 #include "board/Position.h"
 
 /*
- * SEE (靜態交換評估) 實作 — Static Exchange Evaluation
+ * SEE (Static Exchange Evaluation) Implementation
  *
- * 演算法：在不實際走棋的情況下，模擬目標格上的連續兌子交換。
- * 使用 LVA (Least Valuable Attacker) 順序：兵→馬→象→車→后→王。
- * 每次交換後更新攻擊者集合（滑子攻擊線可能被打開）。
+ * Algorithm: simulates successive piece exchanges on a target square without
+ * actually making moves on the board. Uses LVA (Least Valuable Attacker) order:
+ * Pawn → Knight → Bishop → Rook → Queen → King.
+ * The attacker set is updated after each exchange (slider attack lines may open).
  *
- * 兩個核心函數：
- *   see_value_fast() — 完整計算捕獲的淨收益（用於著法排序）
- *   see_ge_fast()    — 判斷捕獲是否達到指定閾值（含提前退出，用於剪枝）
+ * Two core functions:
+ *   see_value_fast() — computes the full net gain of a capture (for move ordering)
+ *   see_ge_fast()    — tests whether a capture meets a threshold (with early exit, for pruning)
  *
- * 棋子價值表（厘兵）：兵=100, 馬=320, 象=330, 車=500, 后=900, 王=20000
+ * Piece value table (centipawns): Pawn=100, Knight=320, Bishop=330, Rook=500, Queen=900, King=20000
  */
 namespace magnus::search {
 
 namespace {
 
-// SEE 棋子價值表 — 國王設為 20000 確保捕獲國王總是最優先/最昂貴的交換
+// SEE piece value table — King set to 20000 to ensure capturing the king is always the highest-priority / most expensive exchange
 constexpr int see_piece_value[PIECE_TYPE_NB] = {
     100, 320, 330, 500, 900, 20000
 };
-// 最大交換步數 — 防止極端情況下的無限循環
+// Maximum exchange depth — prevents infinite loops in extreme cases
 constexpr int SEE_MAX_SWAPS = 64;
 
 [[nodiscard]] inline Bitboard lsb_bit(Bitboard bb) noexcept {

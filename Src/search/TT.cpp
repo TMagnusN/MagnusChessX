@@ -33,11 +33,6 @@ at once, prefer empty lanes when possible, and otherwise replace the weakest
 entry based on depth, age, and bound quality.
 */
 
-/* ===== 繁體中文註釋 =====
- * 本檔案是 MagnusChessX Thinking 西洋棋引擎的一部分。
- * 實作詳情請參閱對應的 .h 標頭檔案。
- */
-
 namespace magnus::memory {
 
 namespace {
@@ -184,12 +179,12 @@ void tt_cluster_store(TTCluster& c, int lane, const TTData& d) noexcept {
 }
 
 /*
- * 置換表實作
- * tt_cluster_clear() — 清空單個快取行（所有 4 個條目歸零）
- * tt_resize_mb() — 調整 TT 大小（分配新記憶體、釋放舊的）
- * tt_new_search() — 遞增世代編號（使舊條目 age 過期）
- * tt_save() — 儲存條目（選擇最佳替換位置，寫入所有欄位）
- * tt_probe() — 探測 TT（比較 4 個 tag32，回傳命中條目）
+ * Transposition Table Implementation
+ * tt_cluster_clear() — zeros a single cache line (all 4 entries)
+ * tt_resize_mb() — resizes the TT (allocates new memory, frees old)
+ * tt_new_search() — increments the generation counter (ages out old entries)
+ * tt_save() — stores an entry (chooses best replacement slot, writes all fields)
+ * tt_probe() — probes the TT (compares 4 tag32 values, returns hit entry)
  */
 void tt_cluster_clear(TTCluster& c) noexcept {
     for (int lane = 0; lane < 4; ++lane) {

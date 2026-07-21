@@ -22,11 +22,6 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
 
-/* ===== ANNOTATED: 繁體中文註釋已添加 =====
- * 本檔案是 MagnusChessX Thinking 西洋棋引擎的一部分。
- * 詳細說明請參閱對應的 .cpp 實作檔案。
- */
-
 
 #pragma once
 
@@ -68,11 +63,12 @@ The picker lazily builds each stage on first use so early cutoffs do not pay
 for later generation and scoring work.
 */
 /*
- * MovePicker — 分階段惰性著法產生器
- * 階段順序：TT著法 → 好捕獲 → 殺手1 → 殺手2 → 安靜著法 → 壞捕獲
- * 每階段在首次使用時惰性構建，早期截斷無需支付後續階段的生成/評分成本
- * QuietControl 控制晚期安靜著法抑制（僅歷史排序，不完整評分）
- * ScoredEntry 儲存捕獲列表供觀測/工具重用（透過公開存取器）
+ * MovePicker — staged lazy move generator
+ * Stage order: TT move -> good captures -> killer 1 -> killer 2 -> quiets -> bad captures
+ * Each stage is lazily built on first use; early cutoffs avoid paying for
+ * generation/scoring of later stages.
+ * QuietControl suppresses late quiet moves (history ordering only, no full scoring).
+ * ScoredEntry stores the capture list for observation/tool reuse (via public accessors).
  */
 class MovePicker {
 public:

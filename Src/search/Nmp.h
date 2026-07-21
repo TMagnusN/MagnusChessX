@@ -27,81 +27,88 @@ SOFTWARE.
 #include "TT.h"
 
 /*
- * NMP (空步剪枝) — Null Move Pruning
+ * NMP (Null Move Pruning)
  *
- * 搜尋引擎中最有效的剪枝技術之一。
- * 核心思想：給對方一個「免費回合」（空步），若對方即使多走一步
- * 仍無法將局面降到 beta 以下，則當前局面很可能是一個截斷節點，
- * 可以直接回傳 beta，無需完整搜索所有著法。
+ * One of the most effective pruning techniques in a chess engine.
+ * Core idea: give the opponent a "free turn" (null move). If the opponent
+ * still cannot push the score below beta even with an extra move, then the
+ * current position is very likely a cut-node and we can immediately return beta
+ * without searching all moves.
  *
- * 空步剪枝的條件：
- *   1. 非 PV 節點（避免影響主變例精度）
- *   2. 走子方未被將軍（否則空步會跳過應將）
- *   3. 走子方有足夠的非兵材料（避免 Zugzwang 局面誤剪）
- *   4. 靜態評估已顯著高於 beta
+ * Null-move pruning conditions:
+ *   1. Non-PV node (to avoid affecting principal variation accuracy)
+ *   2. The side to move is not in check (otherwise a null move would skip
+ *      the obligation to respond to the check)
+ *   3. The side to move has sufficient non-pawn material (to avoid
+ *      mis-pruning in Zugzwang positions)
+ *   4. The static evaluation is already significantly above beta
  *
- * 當空步搜索回傳分數 >= beta 時有兩種處理：
- *   a) 淺層：直接回傳分數（無需驗證）
- *   b) 深層：需要驗證搜索（verify search），以原始深度重新搜索確保正確性
+ * When the null-move search returns a score >= beta, there are two outcomes:
+ *   a) Shallow depth: return the score directly (no verification needed)
+ *   b) Deep depth: requires a verification search at the original depth to
+ *      ensure correctness
  *
- * NmpNodeContext — 空步決策的輸入上下文
- * NmpDecision    — 空步決策的輸出（是否觸發、減免量、驗證參數）
+ * NmpNodeContext — input context for null-move decisions
+ * NmpDecision    — null-move decision output (eligible, reduction, verification params)
  */
 namespace magnus::search {
 
 /*
- * NmpNodeContext — 空步剪枝決策所需的完整節點資訊
+ * NmpNodeContext — complete node information needed for null-move pruning decisions
  *
- * 由 pvs() 在進行空步剪枝前填充，包含所有影響決策的參數。
+ * Filled in by pvs() before performing null-move pruning; contains all parameters
+ * that influence the decision.
  */
 struct NmpNodeContext {
-    int depth = 0;                      // 當前搜索深度
-    int ply = 0;                        // 從根節點算起的半步數
-    int alpha = 0;                      // 當前 alpha 邊界
-    int beta = 0;                       // 當前 beta 邊界（空步的目標是超過此值）
-    int static_eval = 0;                // 當前節點的靜態評估值
-    int tt_score = 0;                   // TT 中儲存的分數（用於邊界調整）
-    int nmp_min_ply = 0;                // NMP 驗證後的最小禁用 ply
-    bool allow_null = false;            // 是否允許空步（可能被 Singular Extension 暫時禁用）
-    bool pv_node = false;               // 是否為 PV 節點（PV 節點不進行空步剪枝）
-    bool cut_node = false;              // 是否為 cut-node（cut-node 允許更激進的減免）
-    bool checked = false;               // 走子方是否被將軍（被將時不可空步）
-    bool improving = false;             // 靜態評估是否在改善中
-    bool exclusion_search = false;      // 是否為排除搜索（奇異檢測中的排除搜索不應空步）
-    bool tt_hit = false;                // TT 是否命中（影響空步閾值）
-    bool tt_move_present = false;       // TT 中是否有著法
-    bool material_ok = false;           // 是否有足夠的非兵材料進行空步（防止 Zugzwang）
-    memory::Bound tt_bound = memory::BOUND_NONE; // TT 邊界類型
+    int depth = 0;                      // current search depth
+    int ply = 0;                        // half-move count from the root
+    int alpha = 0;                      // current alpha bound
+    int beta = 0;                       // current beta bound (the null move aims to exceed this)
+    int static_eval = 0;                // static evaluation of the current node
+    int tt_score = 0;                   // score stored in the TT (used for bound adjustment)
+    int nmp_min_ply = 0;                // minimum ply for which NMP is disabled after verification
+    bool allow_null = false;            // whether null moves are allowed (may be temporarily disabled by Singular Extension)
+    bool pv_node = false;               // whether this is a PV node (null-move pruning is not performed in PV nodes)
+    bool cut_node = false;              // whether this is a cut-node (cut-nodes allow more aggressive reduction)
+    bool checked = false;               // whether the side to move is in check (null move is illegal when in check)
+    bool improving = false;             // whether the static evaluation is improving
+    bool exclusion_search = false;      // whether this is an exclusion search (singular-detection exclusion searches should not null-move)
+    bool tt_hit = false;                // whether the TT was hit (affects null-move threshold)
+    bool tt_move_present = false;       // whether the TT has a move
+    bool material_ok = false;           // whether there is sufficient non-pawn material for a null move (prevent Zugzwang)
+    memory::Bound tt_bound = memory::BOUND_NONE; // TT bound type
 };
 
 /*
- * NmpDecision — 空步剪枝的最終決策
+ * NmpDecision — the final null-move pruning decision
  *
- * 封裝了空步計算的所有輸出參數。
+ * Encapsulates all output parameters of the null-move computation.
  */
 struct NmpDecision {
-    bool eligible = false;              // 是否觸發空步剪枝
-    bool requires_verification = false; // 是否需要驗證搜索（深層空步需要）
-    int eval_gate = 0;                  // 評估門檻：static_eval 必須超過此值才能觸發空步
-    int eval_margin = 0;                // 評估餘量：static_eval - beta
-    int reduction = 0;                  // 空步搜索的減免 ply 數
-    int null_depth = 0;                 // 空步搜索使用的深度（depth - 1 - reduction）
-    int verify_depth = 0;               // 驗證搜索使用的深度（若需要驗證）
-    int verify_min_ply = 0;             // 驗證後的最小禁用 ply（防止連續空步）
+    bool eligible = false;              // whether null-move pruning is triggered
+    bool requires_verification = false; // whether a verification search is required (deep null moves need it)
+    int eval_gate = 0;                  // evaluation gate: static_eval must exceed this for null move to trigger
+    int eval_margin = 0;                // evaluation margin: static_eval - beta
+    int reduction = 0;                  // reduction in ply for the null-move search
+    int null_depth = 0;                 // depth used for the null-move search (depth - 1 - reduction)
+    int verify_depth = 0;               // depth used for the verification search (if required)
+    int verify_min_ply = 0;             // minimum ply to disable NMP after verification (prevent consecutive null moves)
 };
 
 /*
- * nmp_disabled_for_ply — 檢查當前 ply 是否被禁用空步
+ * nmp_disabled_for_ply — check whether null-move pruning is disabled at the current ply
  *
- * 當之前的空步驗證失敗後，會在特定 ply 範圍內禁用空步。
+ * After a previous null-move verification fails, NMP is disabled over a
+ * specific ply range.
  */
 [[nodiscard]] bool nmp_disabled_for_ply(int ply, int nmp_min_ply) noexcept;
 
 /*
- * decide_null_move — 計算空步剪枝決策
+ * decide_null_move — compute the null-move pruning decision
  *
- * 根據節點上下文判斷是否應進行空步剪枝，以及使用什麼參數。
- * 若節點不符合空步條件，回傳 eligible=false。
+ * Determines whether null-move pruning should be attempted and with what
+ * parameters, based on the node context.
+ * Returns eligible=false if the node does not meet null-move conditions.
  */
 [[nodiscard]] NmpDecision decide_null_move(const NmpNodeContext& node) noexcept;
 

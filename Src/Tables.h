@@ -22,11 +22,6 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
 
-/* ===== ANNOTATED: 繁體中文註釋已添加 =====
- * 本檔案是 MagnusChessX Thinking 西洋棋引擎的一部分。
- * 詳細說明請參閱對應的 .cpp 實作檔案。
- */
-
 
 #pragma once
 
@@ -317,10 +312,10 @@ consteval std::array<std::array<u8, SQ_NB>, SQ_NB> make_manhattan() noexcept {
 }
 
 /*
- * Tables — 靜態查表集合（編譯期初始化，搜尋期間唯讀）
- * 包含：國王/騎士/兵攻擊遮罩、between/line 幾何遮罩、
- * Chebyshev/Manhattan 距離表、Zobrist 雜湊鍵表
- * 幾何/跳子表在編譯期通過 consteval 工廠函數一次性構建
+ * Tables — Static lookup table collection (compile-time initialized, read-only during search)
+ * Contains: king/knight/pawn attack masks, between/line geometry masks,
+ * Chebyshev/Manhattan distance tables, Zobrist hash key tables
+ * Geometry/leaper tables are built once at compile time via consteval factory functions
  */
 struct Tables {
     // Leaper attack masks and board geometry helpers.

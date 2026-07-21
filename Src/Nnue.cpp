@@ -37,33 +37,33 @@ SOFTWARE.
 #include <string>
 
 /*
- * NNUE 評估器實作 — Efficiently Updatable Neural Network
+ * NNUE Evaluator Implementation — Efficiently Updatable Neural Network
  *
- * 架構：Chess768 雙視角 → 128 隱藏層神經元 → 1 輸出
+ * Architecture: Chess768 Dual Perspective → 128 Hidden Neurons → 1 Output
  *
- * 核心組件：
- *   1. 增量累加器更新
- *      - on_piece_added/removed/moved 鉤子
- *      - 每次 make/unmake 僅更新 O(隱藏層) 而非 O(輸入×隱藏層)
- *      - AVX2 SIMD 加速（每次處理 16 個神經元）
+ * Core Components:
+ *   1. Incremental Accumulator Updates
+ *      - on_piece_added/removed/moved hooks
+ *      - Each make/unmake updates only O(hidden) instead of O(input×hidden)
+ *      - AVX2 SIMD acceleration (processes 16 neurons at a time)
  *
- *   2. 前向傳播 (forward pass)
+ *   2. Forward Pass
  *      - Clipped ReLU: clamp(x, 0, 255)
- *      - 平方激活: screlu(x) = clamp(x, 0, 255)^2
- *      - AVX2 點積 (forward_dot_avx2)
- *      - 標量後備路徑（無 AVX2 時）
+ *      - Squared activation: screlu(x) = clamp(x, 0, 255)^2
+ *      - AVX2 dot product (forward_dot_avx2)
+ *      - Scalar fallback path (when AVX2 unavailable)
  *
- *   3. 分數轉換
- *      - CP 查表 (build_cp_lookup_table): 基於材料的多項式模型
- *      - 勝率模型 (win_rate_model): Sigmoid 函數
- *      - WDL 三元組 (uci_wdl_from_cp): 勝/和/負千分比
+ *   3. Score Conversion
+ *      - CP lookup table (build_cp_lookup_table): Polynomial model based on material
+ *      - Win rate model (win_rate_model): Sigmoid function
+ *      - WDL triplet (uci_wdl_from_cp): Win/Draw/Loss permille
  *
- *   4. 檔案載入
- *      - 原生 .nnue 格式（含標頭 magic + version + dimensions + scale）
- *      - Bullet quantised .bin 格式（Rust simple.rs 輸出，無標頭）
+ *   4. File Loading
+ *      - Native .nnue format (with header magic + version + dimensions + scale)
+ *      - Bullet quantised .bin format (Rust simple.rs output, no header)
  *
- * 網路狀態儲存在 NativeNetwork (g_net) 中，為全域單例。
- * 累加器儲存在 Position 結構體中（每個視角一個）。
+ * Network state stored in NativeNetwork (g_net), a global singleton.
+ * Accumulators stored in the Position struct (one per perspective).
  */
 namespace magnus::nnue {
 
