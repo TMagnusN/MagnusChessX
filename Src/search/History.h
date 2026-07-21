@@ -22,11 +22,6 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
 
-/* ===== ANNOTATED: 繁體中文註釋已添加 =====
- * 本檔案是 MagnusChessX Thinking 西洋棋引擎的一部分。
- * 詳細說明請參閱對應的 .cpp 實作檔案。
- */
-
 
 #pragma once
 
@@ -243,21 +238,24 @@ HistoryTables separates quiet and capture experience, while keeping killers and
 countermove hints in one place for move ordering and light pruning signals.
 */
 /*
- * HistoryTables — 歷史啟發式查表集合
+ * HistoryTables — collection of history heuristic tables
  *
- * 包含以下子表（全部以 [Color][PieceType][Square] 或類似維度索引）：
- *   quiet_history     — 安靜著法歷史（主歷史表）
- *   capture_history   — 捕獲著法歷史
- *   continuation[3]   — 延續歷史（按 2/4/8 ply 距離分槽）
- *   countermove       — 反著表（對前一步的直接回應）
- *   pawn_history      — 兵結構歷史（基於兵 hash）
- *   see_bias          — SEE 偏差表（按深度類別×SEE類別調整捕獲排序）
- *   killers           — 殺手著法表 [MAX_PLY][2]
+ * Contains the following sub-tables (all indexed by [Color][PieceType][Square]
+ * or similar dimensions):
+ *   quiet_history     — quiet-move history (main history table)
+ *   capture_history   — capture history
+ *   continuation[3]   — continuation history (bucketed by 2/4/8 ply distance)
+ *   countermove       — countermove table (direct response to the previous move)
+ *   pawn_history      — pawn structure history (based on pawn hash)
+ *   see_bias          — SEE bias table (adjusts capture ordering by depth class x SEE class)
+ *   killers           — killer move table [MAX_PLY][2]
  *
- * 更新機制：
- *   bonus  — 著法導致截斷時增加權重（增量 = depth²）
- *   penalty — 被搜索但未截斷的著法減少權重（減量 = depth²×4）
- *   所有更新使用有界重力公式，越接近上限時同方向更新越小
+ * Update mechanism:
+ *   bonus   — increase weight when a move causes a cutoff (increment = depth^2)
+ *   penalty — decrease weight for moves that were searched but did not produce a
+ *             cutoff (decrement = depth^2 x 4)
+ *   All updates use bounded gravity formulas: the closer to the limit, the smaller
+ *   the update in the same direction
  */
 struct HistoryTables {
     KillerTable killers{};

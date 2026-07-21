@@ -28,11 +28,6 @@ SOFTWARE.
 #include <algorithm>
 #include <cmath>
 
-/* ===== 繁體中文註釋 =====
- * 本檔案是 MagnusChessX Thinking 西洋棋引擎的一部分。
- * 實作詳情請參閱對應的 .h 標頭檔案。
- */
-
 namespace magnus::timeman {
 
 namespace {
@@ -48,8 +43,8 @@ namespace {
 } // namespace
 
 /*
- * 時間管理實作
- * build_limits() — 從 UCI go 參數計算軟/硬時間限制
+ * Time Management Implementation
+ * build_limits() — computes soft/hard time limits from UCI go parameters
  */
 void TimeManager::new_game() noexcept {
     original_time_adjust_ = -1.0;

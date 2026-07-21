@@ -50,43 +50,50 @@ SOFTWARE.
 #include "syzygy/Syzygy.h"
 
 /*
- * MagnusChessX Thinking 搜尋引擎核心 — Search Engine Core
+ * MagnusChessX Thinking Search Engine Core
  *
- * 採用經典的迭代加深 + 主變例搜尋 (PVS) 架構，包含以下關鍵組件：
+ * Uses a classic Iterative Deepening + Principal Variation Search (PVS) architecture
+ * with the following key components:
  *
- * 1. 反覆加深 (Iterative Deepening)
- *    - 從深度 1 逐步增加到最大深度
- *    - 每層使用 aspiration window 加速收斂
- *    - Stockfish 風格的時間管理決定何時停止
+ * 1. Iterative Deepening
+ *    - Incrementally increases depth from 1 to the maximum
+ *    - Uses aspiration windows at each ply to accelerate convergence
+ *    - Dynamic time management determines when to stop
  *
- * 2. 主變例搜尋 (PVS — Principal Variation Search)
- *    - 第一個著法用完整窗口搜索
- *    - 後續著法用零窗口 (null window) 搜索
- *    - 零窗口 fail-high 時觸發完整窗口 re-search
+ * 2. PVS — Principal Variation Search
+ *    - First move searched with a full window
+ *    - Subsequent moves searched with a null window
+ *    - Null-window fail-high triggers a full-window re-search
  *
- * 3. 靜態搜索 (Quiescence Search)
- *    - 只搜索戰術著法（捕獲、升變）
- *    - stand-pat 原則：靜態評估已達 beta 即可截斷
- *    - delta pruning 跳過無法提升 alpha 的捕獲
+ * 3. Quiescence Search
+ *    - Only searches tactical moves (captures, promotions)
+ *    - Stand-pat principle: cut if static evaluation already reaches beta
+ *    - Delta pruning skips captures that cannot raise alpha
  *
- * 4. 剪枝技術
- *    - 空步剪枝 (NMP) — 給對方免費回合測試截斷
- *    - 反向虛無剪枝 (RFP) — 靜態評估遠高於 beta 時提前截斷
- *    - 剃刀剪枝 (Razoring) — 淺層評估極差時跳至 qsearch
- *    - 機率截斷 (ProbCut) — 用淺層搜索預測深層截斷
- *    - 奇異延伸 (Singular Extension) — TT 著法為唯一好著時延伸
- *    - 延遲著法減免 (LMR) — 排序靠後的著法用縮減深度搜索
- *    - 歷史啟發式剪枝 — 歷史分數極差的安靜著法直接跳過
- *    - 捕獲 futility 剪枝 — 淺層捕獲不可能達到 alpha 時跳過
+ * 4. Pruning Techniques
+ *    - Null Move Pruning (NMP) — give opponent a free turn to test cutoff
+ *    - Reverse Futility Pruning (RFP) — cut early when static eval is far above beta
+ *    - Razoring — jump to qsearch when shallow eval is extremely poor
+ *    - ProbCut — use shallow searches to predict deep cutoffs
+ *    - Singular Extension — extend when TT move is the only good move
+ *    - Late Move Reduction (LMR) — search later moves with reduced depth
+ *    - History Heuristic Pruning — skip quiet moves with very poor history scores
+ *    - Capture Futility Pruning — skip shallow captures that cannot reach alpha
  *
- * 5. 並行搜索 (Lazy SMP)
- *    - 多線程各自獨立搜索，共享置換表
- *    - 加權投票選擇最佳著法
+ * 5. Parallel Search (Lazy SMP)
+ *    - Multiple threads search independently, sharing the transposition table
+ *    - Weighted voting selects the best move
  *
- * 核心結構體 Searcher 封裝了單次迭代加深會話的所有可變狀態。
+ * The core Searcher struct encapsulates all mutable state for a single iterative
+ * deepening session.
  */
 
 namespace magnus::search {
+
+static_assert(
+    static_cast<std::size_t>(MAX_PLY) <= mnue::P2AccumulatorStack::Capacity,
+    "P2 accumulator stack must cover the complete search ply budget"
+);
 
 namespace {
 
@@ -106,21 +113,19 @@ std::size_t tt_move_trust_bucket(int trust) noexcept {
     return TT_MOVE_TRUST_BUCKETS - 1;
 }
 
-bool stockfish_capture_stage(Move move) noexcept {
+bool capture_stage(Move move) noexcept {
     return move_is_capture(move)
         || (move_is_promotion(move) && promo_piece(move) == QUEEN);
 }
 
-bool stockfish_is_shuffling(
+bool is_shuffling(
     Move move,
     const Position& pos,
     Move move2,
     Move move4,
     int ply
 ) noexcept {
-    // Frozen reference: Stockfish 18 commit
-    // cb3d4ee9b47d0c5aae855b12379378ea1439675c.
-    if (stockfish_capture_stage(move) || pos.halfmove_clock < 10)
+    if (capture_stage(move) || pos.halfmove_clock < 10)
         return false;
     if (pos.plies_from_null <= 6 || ply < 20)
         return false;
@@ -537,17 +542,27 @@ inline void append_uci_score(
             score > 0 ? TB_CP - distance : -TB_CP + distance;
         out << "score cp " << display_score;
         append_uci_score_bound(out, bound);
-        out << " wdl "
-            << (score > 0 ? "1000 0 0" : "0 0 1000");
         return;
     }
 
     const int display_score = mnue::search_score_to_cp(score, root);
     out << "score cp " << display_score;
     append_uci_score_bound(out, bound);
+}
 
-    const mnue::WdlTriplet wdl = mnue::search_score_to_wdl(score, root);
-    out << " wdl " << wdl.win << ' ' << wdl.draw << ' ' << wdl.loss;
+[[nodiscard]] inline mnue::WdlTriplet compute_uci_wdl(
+    int score,
+    const Position& root
+) noexcept {
+    if (score >= VALUE_MATE - MAX_PLY)
+        return {1000, 0, 0};
+    if (score <= -VALUE_MATE + MAX_PLY)
+        return {0, 0, 1000};
+    if (std::abs(score) >= VALUE_TB - MAX_PLY && std::abs(score) <= VALUE_TB)
+        return score > 0
+            ? mnue::WdlTriplet{1000, 0, 0}
+            : mnue::WdlTriplet{0, 0, 1000};
+    return mnue::search_score_to_wdl(score, root);
 }
 
 [[nodiscard]] inline bool root_msv_enabled(
@@ -1842,7 +1857,7 @@ struct Searcher {
     ) const noexcept {
         const Move move2 = search_stack[ply - 2].current_move;
         const Move move4 = search_stack[ply - 4].current_move;
-        return stockfish_is_shuffling(move, pos, move2, move4, ply);
+        return ::magnus::search::is_shuffling(move, pos, move2, move4, ply);
     }
 
     [[nodiscard]] inline SingularContext make_singular_context(
@@ -4194,7 +4209,7 @@ struct Searcher {
                 if (singular_score < singular_beta) {
                     const int corr_val_adj =
                         std::abs(correction) * 131072 / 230673;
-                    const bool tt_capture = stockfish_capture_stage(move);
+                    const bool tt_capture = capture_stage(move);
                     const int double_margin =
                         -4
                         + 199 * static_cast<int>(pv_node)
@@ -4342,7 +4357,7 @@ struct Searcher {
             make_search_move(pos, move, st);
             memory::tt_prefetch(mem.tt, memory::tt_key(pos, mem.tables));
 
-            const int new_depth = stockfish_singular_child_depth(
+            const int new_depth = singular_child_depth(
                 move_base_depth,
                 move_extension
             );
@@ -4566,7 +4581,7 @@ struct Searcher {
                     && node_depth > 2
                     && node_depth < 14
                     && !is_decisive(score)) {
-                    node_depth = stockfish_depth_after_alpha_improvement(
+                    node_depth = depth_after_alpha_improvement(
                         node_depth,
                         false
                     );
@@ -4671,7 +4686,7 @@ struct Searcher {
             && best_score >= beta
             && !is_decisive(best_score)
             && !is_decisive(alpha)) {
-            node_value = stockfish_fail_high_softbound(
+            node_value = fail_high_softbound(
                 best_score,
                 beta,
                 node_depth
@@ -5186,7 +5201,7 @@ void initialize_iteration_time_state(
             limits.time_state->previous_time_reduction;
 }
 
-[[nodiscard]] inline bool use_stockfish_style_time_management(
+[[nodiscard]] inline bool use_adaptive_time_management(
     const SearchLimits& limits
 ) noexcept {
     return limits.use_time_management &&
@@ -5229,10 +5244,10 @@ void initialize_iteration_time_state(
     }
 
     // Fixed-time grace: simple depth-boundary stop for go movetime.
-    // When the sf-style clock is disabled but a hard limit exists, avoid
+    // When adaptive time management is disabled but a hard limit exists, avoid
     // launching a new depth with essentially zero remaining budget
     // (the hard-limit poll will kill it before a single move is searched).
-    if (!use_stockfish_style_time_management(searcher.limits) &&
+    if (!use_adaptive_time_management(searcher.limits) &&
         searcher.limits.hard_time_ms > 0 &&
         time_state.last_depth_time_ms > 0) {
         const int elapsed = searcher.timed_elapsed_ms();
@@ -5243,7 +5258,7 @@ void initialize_iteration_time_state(
             should_stop = true;
     }
 
-    if (use_stockfish_style_time_management(searcher.limits)) {
+    if (use_adaptive_time_management(searcher.limits)) {
         time_state.total_best_move_changes /= 2.0;
         if (searcher.limits.time_signals != nullptr) {
             time_state.total_best_move_changes +=
@@ -6206,9 +6221,14 @@ void emit_iteration_info(
     const u64 time_ms = static_cast<u64>(seconds * 1000.0);
     const int hashfull = memory::tt_hashfull(local_mem.tt);
 
-    stream << "info depth " << depth
-           << " seldepth " << current.seldepth
-           << " multipv " << multipv_index << ' ';
+    stream << "info multipv " << multipv_index
+           << " depth " << depth
+           << " seldepth " << current.seldepth;
+    {
+        const mnue::WdlTriplet wdl = compute_uci_wdl(current.score, local_root);
+        stream << " wdl " << wdl.win << ' ' << wdl.draw << ' ' << wdl.loss;
+    }
+    stream << ' ';
     append_uci_score(
         stream,
         current.score,

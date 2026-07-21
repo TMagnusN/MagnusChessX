@@ -29,18 +29,19 @@ SOFTWARE.
 #include "Search.h"
 
 /*
- * NMP (空步剪枝) 實作 — Null Move Pruning
+ * NMP (Null Move Pruning) Implementation
  *
- * 核心思想：給對方一個「免費回合」。
- * 若對方多走一步仍無法將局面降到 beta 以下，則當前節點很可能截斷，
- * 可以直接回傳 beta 而無需搜索所有著法。
+ * Core idea: give the opponent a "free turn".
+ * If the opponent still cannot push the position below beta after an extra move,
+ * the current node is very likely a cutoff and can return beta without searching
+ * all moves.
  *
- * 注意事項：
- *   1. 被將軍時不可空步（否則跳過應將）
- *   2. Zugzwang 局面需特別處理（僅有王+兵時禁用空步）
- *   3. 深層空步需要驗證搜索以免誤剪
+ * Caveats:
+ *   1. Do not null-move when in check (would skip check evasion)
+ *   2. Zugzwang positions need special handling (disable null move when only K+P)
+ *   3. Deep null moves require verification search to avoid false pruning
  *
- * NMP 減免量 = 2 + depth/4 + eval_margin/96 + cut_node + !improving + !tt_move
+ * NMP reduction = 2 + depth/4 + eval_margin/96 + cut_node + !improving + !tt_move
  */
 namespace magnus::search {
 

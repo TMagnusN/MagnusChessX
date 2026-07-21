@@ -36,11 +36,6 @@ then uses specialized generators for evasions, non-evasions, and the final
 legality filter.
 */
 
-/* ===== 繁體中文註釋 =====
- * 本檔案是 MagnusChessX Thinking 西洋棋引擎的一部分。
- * 實作詳情請參閱對應的 .h 標頭檔案。
- */
-
 namespace magnus {
 
 namespace {
@@ -209,8 +204,18 @@ Bitboard pinners_bb(
 ) noexcept {
     Bitboard pinners = 0ULL;
     Bitboard pinned = 0ULL;
-    query_compute_pinners_and_pinned(pos, mem, us, pinners, pinned);
+    pinners_and_pinned_bb(pos, mem, us, pinners, pinned);
     return pinners;
+}
+
+void pinners_and_pinned_bb(
+    const Position& pos,
+    const memory::Memory& mem,
+    Color us,
+    Bitboard& pinners,
+    Bitboard& pinned
+) noexcept {
+    query_compute_pinners_and_pinned(pos, mem, us, pinners, pinned);
 }
 
 Bitboard pinned_bb(
@@ -220,7 +225,7 @@ Bitboard pinned_bb(
 ) noexcept {
     Bitboard pinners = 0ULL;
     Bitboard pinned = 0ULL;
-    query_compute_pinners_and_pinned(pos, mem, us, pinners, pinned);
+    pinners_and_pinned_bb(pos, mem, us, pinners, pinned);
     return pinned;
 }
 
@@ -1050,8 +1055,8 @@ inline Move* generate_ep_non_evasions(
         const Square from = lsb_sq(ep_attackers);
         ep_attackers &= ep_attackers - 1;
 
-        // 普通 pin line 过滤先保留；
-        // 但 EP 真正是否合法，后面还要靠 legal()/copy-make 再判一次。
+        // Filter through the pin line mask first;
+        // EP true legality is checked again later by legal()/copy-make.
         if (!(pin_mask_for(mem, info, from) & bb_of(info.ep_sq)))
             continue;
 
@@ -1083,14 +1088,14 @@ inline Move* generate_ep_evasions(
     if (info.ep_sq == NO_SQ || info.double_check)
         return out;
 
-    // EP 的目标格是 ep_sq，但被吃掉的兵在 cap_sq
+    // The EP target square is ep_sq, but the captured pawn sits on cap_sq
     const Square cap_sq = (info.us == WHITE) ? (info.ep_sq - 8) : (info.ep_sq + 8);
     const Bitboard ep_to_bb = bb_of(info.ep_sq);
     const Bitboard cap_bb   = bb_of(cap_sq);
 
-    // EP 能解将的两种情况：
-    // 1) 吃掉的那只兵本身就是 checker
-    // 2) 落到 ep_sq 这个格正好是 block square
+    // Two ways EP can resolve a check:
+    // 1) The captured pawn is itself the checker
+    // 2) Landing on ep_sq is exactly a block square
     if (!(info.capture_mask & cap_bb) && !(info.push_mask & ep_to_bb))
         return out;
 
@@ -1116,7 +1121,7 @@ inline Move* generate_castling_non_evasions(
     const GenInfo& info,
     Move* out
 ) noexcept {
-    // 王在将军中绝不能易位
+    // King must never castle while in check
     if (info.in_check)
         return out;
 

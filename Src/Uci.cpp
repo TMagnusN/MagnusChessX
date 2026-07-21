@@ -64,36 +64,36 @@ SOFTWARE.
 #endif
 
 /*
- * MagnusChessX Thinking UCI å‰ç«¯ â€” Universal Chess Interface å¯¦ä½œ
+ * MagnusChessX Thinking UCI Frontend — Universal Chess Interface Implementation
  *
- * å®Œæ•´çš„ UCI å”å®šå¯¦ä½œï¼ŒåŒ…å«ä»¥ä¸‹åŠŸèƒ½æ¨¡çµ„ï¼š
+ * Complete UCI protocol implementation, comprising the following modules:
  *
- * 1. UCI å‘½ä»¤è§£æžèˆ‡æ´¾ç™¼
- *    - uci / isready / ucinewgame / quit â€” æ¨™æº– UCI æ¡æ‰‹
- *    - position [startpos|fen ...] [moves ...] â€” å±€é¢è¨­å®š
- *    - go [depth|movetime|wtime|btime|...] â€” æœå°‹æŽ§åˆ¶
- *    - stop / ponderhit â€” éžåŒæ­¥æœå°‹æŽ§åˆ¶
- *    - setoption name [Hash|Threads|MNUEfile|...] value â€” å¼•æ“Žé¸é …
+ * 1. UCI Command Parsing and Dispatch
+ *    - uci / isready / ucinewgame / quit — Standard UCI handshake
+ *    - position [startpos|fen ...] [moves ...] — Position setup
+ *    - go [depth|movetime|wtime|btime|...] — Search control
+ *    - stop / ponderhit — Asynchronous search control
+ *    - setoption name [Hash|Threads|MNUEfile|...] value — Engine options
  *
- * 2. FEN è§£æž (parse_fen)
- *    - é©—è­‰æ£‹ç›¤çµæ§‹ã€èµ°å­æ–¹ã€æ˜“ä½æ¬Šã€éŽè·¯å…µ
- *    - é€šéŽæ¨™æº– piece-placement API å»ºæ§‹å±€é¢
+ * 2. FEN Parsing (parse_fen)
+ *    - Validates board structure, side to move, castling rights, en passant
+ *    - Builds position via standard piece-placement API
  *
- * 3. æœå°‹ç·šç¨‹ç®¡ç† (UciSession)
- *    - åˆä½œå¼åœæ­¢ (stop_requested åŽŸå­è®Šé‡)
- *    - æ²‰æ€æ¨¡å¼æ”¯æ´ (ponder / ponderhit æ™‚é–“è¿½è¹¤)
- *    - MNUE P2/P2Pro evaluator è¼‰å…¥
+ * 3. Search Thread Management (UciSession)
+ *    - Cooperative stop (stop_requested atomic variable)
+ *    - Ponder mode support (ponder / ponderhit time tracking)
+ *    - MNUE P2/P2Pro evaluator loading
  *
- * 4. PvTrackingStreamBuf â€” è‡ªè¨‚ streambuf
- *    - æ””æˆªæœå°‹è¼¸å‡ºçš„ "info ... pv ..." è¡Œ
- *    - æå– PV ç”¨æ–¼æ²‰æ€è‘—æ³•è¨ˆç®—
+ * 4. PvTrackingStreamBuf — Custom streambuf
+ *    - Intercepts "info ... pv ..." lines from search output
+ *    - Extracts PV for ponder move calculation
  */
 
 namespace magnus {
 
 namespace {
 
-constexpr std::string_view ENGINE_NAME = "MagXTK-7SM2";
+constexpr std::string_view ENGINE_NAME = "MagXTK-14SM1";
 constexpr int DEFAULT_UCI_HASH_MB = 16;
 constexpr int DEFAULT_UCI_THREADS = 1;
 constexpr int MAX_UCI_THREADS = 512;
@@ -1813,9 +1813,9 @@ struct UciSession {
 int run_bench(int argc, char** argv) {
     const auto print_usage = []() {
         std::cerr
-            << "usage: MagXTK-7SM2.exe bench [depth=12] [hash_mb=16] [threads=1] [stage=A]\n"
-            << "       MagXTK-7SM2.exe perft <depth>\n"
-            << "       MagXTK-7SM2.exe spsa [json|csv]\n";
+            << "usage: MagXTK-14SM1.exe bench [depth=12] [hash_mb=16] [threads=1] [stage=A]\n"
+            << "       MagXTK-14SM1.exe perft <depth>\n"
+            << "       MagXTK-14SM1.exe spsa [json|csv]\n";
     };
 
     if (argc <= 1) {

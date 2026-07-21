@@ -26,19 +26,14 @@ SOFTWARE.
 
 #include <algorithm>
 
-/* ===== 繁體中文註釋 =====
- * 本檔案是 MagnusChessX Thinking 西洋棋引擎的一部分。
- * 實作詳情請參閱對應的 .h 標頭檔案。
- */
-
 namespace magnus::search {
 
 /*
- * 歷史啟發式實作
- * depth_class() — 將深度映射到 Shallow/MediumLow/MediumHigh/Deep 類別
- * classify_see() — 將 SEE 值分類（LossBig/LossSmall/Equal/GainSmall/GainBig/Promo/Check）
- * history_bonus/penalty() — 計算歷史權重更新量（bonus=d², penalty=4d²）
- * see_immediate_term() — SEE 的立即評分項（按 Weak/Medium/Strong 預設縮放）
+ * History Heuristic Implementation
+ * depth_class() — maps depth to Shallow/MediumLow/MediumHigh/Deep categories
+ * classify_see() — classifies SEE values (LossBig/LossSmall/Equal/GainSmall/GainBig/Promo/Check)
+ * history_bonus/penalty() — computes history weight updates (bonus=d², penalty=4d²)
+ * see_immediate_term() — SEE immediate scoring term (scaled by Weak/Medium/Strong presets)
  */
 DepthClass depth_class(int depth) noexcept {
     if (depth <= 3) return DepthClass::Shallow;

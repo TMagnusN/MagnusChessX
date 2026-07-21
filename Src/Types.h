@@ -27,157 +27,157 @@ SOFTWARE.
 #include <cstdint>
 
 /*
- * 全域型別定義 — MagnusChessX Thinking 的基礎型別系統
+ * Global Type Definitions — Foundation type system for MagnusChessX Thinking
  *
- * 所有模組（著法生成、搜尋、評估、雜湊）共享此處定義的
- * 純量別名、列舉型別、以及位元運算輔助函數。
+ * All modules (move generation, search, evaluation, hashing) share the
+ * scalar aliases, enumerations, and bit-operation helper functions defined here.
  *
- * 設計原則：
- *   - 使用固定寬度整數型別（u64/i16 等）確保跨平台一致性
- *   - Move 封裝為 16 位元（u16），包含起點/終點/升變資訊
- *   - Square 使用 int（0-63），方便陣列索引
- *   - 所有輔助函數為 constexpr，支援編譯期計算
+ * Design principles:
+ *   - Use fixed-width integer types (u64/i16 etc.) to ensure cross-platform consistency
+ *   - Move is packed into 16 bits (u16), containing source/destination/promotion info
+ *   - Square uses int (0-63) for convenient array indexing
+ *   - All helper functions are constexpr, supporting compile-time evaluation
  */
 namespace magnus {
 
 // ============================================================
-// 固定寬度整數別名 — 確保跨平台位元寬度一致
+// Fixed-width integer aliases — ensure consistent bit-width across platforms
 // ============================================================
-using u8  = std::uint8_t;       //  8 位元無符號（用於 TT age/flags）
-using u16 = std::uint16_t;      // 16 位元無符號（Move 封裝格式）
-using u32 = std::uint32_t;      // 32 位元無符號（TT tag32、NNUE generation）
-using u64 = std::uint64_t;      // 64 位元無符號（Bitboard、Key、節點計數）
-using i8  = std::int8_t;        //  8 位元有符號
-using i16 = std::int16_t;       // 16 位元有符號（TT score/eval/depth、NNUE 權重）
-using i32 = std::int32_t;       // 32 位元有符號（著法排序分數、LMR 計算）
-using i64 = std::int64_t;       // 64 位元有符號（觀測統計累加）
+using u8  = std::uint8_t;       //  8-bit unsigned (used for TT age/flags)
+using u16 = std::uint16_t;      // 16-bit unsigned (Move packed format)
+using u32 = std::uint32_t;      // 32-bit unsigned (TT tag32, NNUE generation)
+using u64 = std::uint64_t;      // 64-bit unsigned (Bitboard, Key, node count)
+using i8  = std::int8_t;        //  8-bit signed
+using i16 = std::int16_t;       // 16-bit signed (TT score/eval/depth, NNUE weights)
+using i32 = std::int32_t;       // 32-bit signed (move ordering score, LMR computation)
+using i64 = std::int64_t;       // 64-bit signed (observational statistics accumulation)
 
 // ============================================================
-// 核心領域型別別名
+// Core domain type aliases
 // ============================================================
-using Bitboard = u64;           // 位元棋盤：每個位元代表一個方格
-using Key      = u64;           // Zobrist 雜湊鍵（64 位元）
-using Move     = u16;           // 著法封裝（16 位元：起點 6 + 終點 6 + 旗標 4）
-using Square   = int;           // 方格索引（0-63，a1=0, h8=63）
-using Score    = int;           // 評分（厘兵 cp 單位）
+using Bitboard = u64;           // Bitboard: each bit represents one square
+using Key      = u64;           // Zobrist hash key (64-bit)
+using Move     = u16;           // Move packing (16-bit: source 6 + destination 6 + flags 4)
+using Square   = int;           // Square index (0-63, a1=0, h8=63)
+using Score    = int;           // Score (centipawn cp units)
 
 // ============================================================
-// 棋盤維度常數
+// Board dimension constants
 // ============================================================
-constexpr int SQ_NB    = 64;    // 總方格數
-constexpr int FILE_NB  = 8;     // 列數（a-h）
-constexpr int RANK_NB  = 8;     // 行數（1-8）
-constexpr int COLOR_NB = 2;     // 顏色數（白/黑）
-constexpr int PIECE_NB = 6;     // 棋子類型數（兵/馬/象/車/后/王）
+constexpr int SQ_NB    = 64;    // Total number of squares
+constexpr int FILE_NB  = 8;     // Number of files (a-h)
+constexpr int RANK_NB  = 8;     // Number of ranks (1-8)
+constexpr int COLOR_NB = 2;     // Number of colors (white/black)
+constexpr int PIECE_NB = 6;     // Number of piece types (pawn/knight/bishop/rook/queen/king)
 
 // ============================================================
-// 顏色列舉 — 走子方標識
+// Color enumeration — side-to-move identifier
 // ============================================================
 enum Color : int {
-    WHITE = 0,                  // 白方
-    BLACK = 1,                  // 黑方
-    COLOR_NONE = 2              // 無顏色（用於空方格或錯誤狀態）
+    WHITE = 0,                  // White
+    BLACK = 1,                  // Black
+    COLOR_NONE = 2              // No color (for empty squares or error state)
 };
 
 // ============================================================
-// 棋子類型列舉 — 不含顏色資訊的棋子種類
+// PieceType enumeration — piece kind without color information
 // ============================================================
 enum PieceType : int {
-    PAWN = 0,                   // 兵
-    KNIGHT = 1,                 // 馬
-    BISHOP = 2,                 // 象
-    ROOK = 3,                   // 車
-    QUEEN = 4,                  // 后
-    KING = 5,                   // 王
-    PIECE_TYPE_NB = 6,          // 棋子類型總數（用於陣列大小）
-    PIECE_TYPE_NONE = 7         // 無類型（空方格）
+    PAWN = 0,                   // Pawn
+    KNIGHT = 1,                 // Knight
+    BISHOP = 2,                 // Bishop
+    ROOK = 3,                   // Rook
+    QUEEN = 4,                  // Queen
+    KING = 5,                   // King
+    PIECE_TYPE_NB = 6,          // Total number of piece types (for array sizing)
+    PIECE_TYPE_NONE = 7         // No type (empty square)
 };
 
 // ============================================================
-// 棋子列舉 — 含顏色資訊的具體棋子（12 種 + 空）
+// Piece enumeration — concrete piece with color (12 types + none)
 // ============================================================
 enum Piece : int {
-    W_PAWN   = 0,               // 白兵
-    W_KNIGHT = 1,               // 白馬
-    W_BISHOP = 2,               // 白象
-    W_ROOK   = 3,               // 白車
-    W_QUEEN  = 4,               // 白后
-    W_KING   = 5,               // 白王
+    W_PAWN   = 0,               // White Pawn
+    W_KNIGHT = 1,               // White Knight
+    W_BISHOP = 2,               // White Bishop
+    W_ROOK   = 3,               // White Rook
+    W_QUEEN  = 4,               // White Queen
+    W_KING   = 5,               // White King
 
-    B_PAWN   = 6,               // 黑兵
-    B_KNIGHT = 7,               // 黑馬
-    B_BISHOP = 8,               // 黑象
-    B_ROOK   = 9,               // 黑車
-    B_QUEEN  = 10,              // 黑后
-    B_KING   = 11,              // 黑王
+    B_PAWN   = 6,               // Black Pawn
+    B_KNIGHT = 7,               // Black Knight
+    B_BISHOP = 8,               // Black Bishop
+    B_ROOK   = 9,               // Black Rook
+    B_QUEEN  = 10,              // Black Queen
+    B_KING   = 11,              // Black King
 
-    PIECE_NONE = 12             // 無棋子
+    PIECE_NONE = 12             // No piece
 };
 
 // ============================================================
-// 王車易位權限列舉 — 位元旗標
+// Castling rights enumeration — bit flags
 // ============================================================
 enum CastlingRight : int {
-    NO_CASTLING = 0,            // 無易位權限
-    WHITE_OO    = 1 << 0,       // 白方短易位（Kingside）
-    WHITE_OOO   = 1 << 1,       // 白方長易位（Queenside）
-    BLACK_OO    = 1 << 2,       // 黑方短易位
-    BLACK_OOO   = 1 << 3,       // 黑方長易位
+    NO_CASTLING = 0,            // No castling rights
+    WHITE_OO    = 1 << 0,       // White kingside castling
+    WHITE_OOO   = 1 << 1,       // White queenside castling
+    BLACK_OO    = 1 << 2,       // Black kingside castling
+    BLACK_OOO   = 1 << 3,       // Black queenside castling
 
-    WHITE_CASTLING = WHITE_OO | WHITE_OOO,   // 白方所有易位
-    BLACK_CASTLING = BLACK_OO | BLACK_OOO,   // 黑方所有易位
-    ANY_CASTLING   = WHITE_CASTLING | BLACK_CASTLING  // 所有易位
+    WHITE_CASTLING = WHITE_OO | WHITE_OOO,   // All white castling
+    BLACK_CASTLING = BLACK_OO | BLACK_OOO,   // All black castling
+    ANY_CASTLING   = WHITE_CASTLING | BLACK_CASTLING  // All castling
 };
 
-constexpr Square NO_SQ = -1;    // 表示「無方格」（用於 en-passant 不存在時）
+constexpr Square NO_SQ = -1;    // Represents "no square" (used when en-passant does not exist)
 
 // ============================================================
-// 位元運算輔助函數（全部 constexpr，零運行時開銷）
+// Bit-operation helper functions (all constexpr, zero runtime overhead)
 // ============================================================
 
-// bb_of — 取得指定方格的位元遮罩（1ULL << sq）
+// bb_of — get the bitmask for a given square (1ULL << sq)
 constexpr Bitboard bb_of(Square sq) noexcept {
     return 1ULL << sq;
 }
 
-// file_of — 從方格索引提取列號（0=a, 7=h）
+// file_of — extract the file index from a square (0=a, 7=h)
 constexpr int file_of(Square sq) noexcept {
     return sq & 7;
 }
 
-// rank_of — 從方格索引提取行號（0=1st rank, 7=8th rank）
+// rank_of — extract the rank index from a square (0=1st rank, 7=8th rank)
 constexpr int rank_of(Square sq) noexcept {
     return sq >> 3;
 }
 
-// on_board — 檢查方格是否在棋盤範圍內（0-63）
+// on_board — check whether a square is within the board range (0-63)
 constexpr bool on_board(Square sq) noexcept {
     return sq >= 0 && sq < 64;
 }
 
-// operator~ — 顏色反轉（白→黑，黑→白）
+// operator~ — flip color (white-->black, black-->white)
 constexpr Color operator~(Color c) noexcept {
     return static_cast<Color>(static_cast<int>(c) ^ 1);
 }
 
-// make_piece — 從顏色和棋子類型組合出完整的棋子
+// make_piece — combine color and piece type into a full piece
 constexpr Piece make_piece(Color c, PieceType pt) noexcept {
     return static_cast<Piece>(static_cast<int>(pt) + (c == WHITE ? 0 : 6));
 }
 
-// color_of — 從棋子提取顏色
+// color_of — extract the color from a piece
 constexpr Color color_of(Piece pc) noexcept {
     return pc == PIECE_NONE ? COLOR_NONE
                             : (pc < 6 ? WHITE : BLACK);
 }
 
-// type_of — 從棋子提取棋子類型（去除顏色資訊）
+// type_of — extract the piece type from a piece (strips color)
 constexpr PieceType type_of(Piece pc) noexcept {
     return pc == PIECE_NONE ? PIECE_TYPE_NONE
                             : static_cast<PieceType>(static_cast<int>(pc) % 6);
 }
 
-// is_ok — 驗證列舉值是否在合法範圍內
+// is_ok — validate that an enum value is within legal bounds
 constexpr bool is_ok(Color c) noexcept {
     return c == WHITE || c == BLACK;
 }

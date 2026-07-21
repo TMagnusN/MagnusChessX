@@ -32,43 +32,49 @@ struct Position;
 }
 
 /*
- * SEE (靜態交換評估) — Static Exchange Evaluation
+ * SEE (Static Exchange Evaluation)
  *
- * 在不實際走棋的情況下，模擬目標格上的連續兌子交換，
- * 計算捕獲著法的淨材料收益（以厘兵為單位）。
+ * Without actually making moves on the board, simulates a series of consecutive
+ * captures on a target square and computes the net material gain (in centipawns)
+ * for a capture move.
  *
- * 核心演算法：
- *   1. 起始方走捕獲，獲得 victim 的價值
- *   2. 對方用最小價值的攻擊子（LVA, Least Valuable Attacker）反吃
- *   3. 交替進行，每次用 LVA 回應
- *   4. 當一方不再有攻擊子、或國王被暴露時終止
- *   5. 從最深層回溯，使用 minimax 計算最優交換序列的淨值
+ * Core algorithm:
+ *   1. The side to move makes the capture and gains the victim's value
+ *   2. The opponent responds with the Least Valuable Attacker (LVA)
+ *   3. The sides alternate, each time responding with the LVA
+ *   4. The exchange terminates when one side runs out of attackers or a king
+ *      is exposed
+ *   5. Backpropagate from the deepest level using minimax to compute the net
+ *      value of the optimal exchange sequence
  *
- * 兩個主要用途：
- *   a) 著法排序 — 好的捕獲（正 SEE）排在壞的捕獲（負 SEE）之前
- *   b) 剪枝決策 — 負 SEE 的捕獲在淺層可以被安全跳過
+ * Two main uses:
+ *   a) Move ordering — good captures (positive SEE) are ordered before bad
+ *      captures (negative SEE)
+ *   b) Pruning decisions — captures with negative SEE can be safely skipped
+ *      at shallow depths
  *
- * 本模組提供四個公開函數：
- *   see_value()      — 完整計算捕獲的 SEE 值（慢速路徑，含驗證）
- *   see_value_fast() — 快速路徑，假設調用者已確認著法合法
- *   see_ge()         — 判斷捕獲是否達到指定閾值（含驗證）
- *   see_ge_fast()    — 快速路徑的閾值判斷（含提前退出優化）
+ * This module provides four public functions:
+ *   see_value()      — full SEE computation with legality verification (slow path)
+ *   see_value_fast() — fast path, assumes the caller has confirmed the move is legal
+ *   see_ge()         — threshold check with legality verification
+ *   see_ge_fast()    — fast-path threshold check (with early-exit optimization)
  */
 namespace magnus::search {
 
-// 共用棋子價值表（厘兵）— 用於 MVV-LVA 排序與捕獲 gain 估算
-// 兵=100, 馬=320, 象=330, 車=500, 后=900, 王=0（王不參與 MVV-LVA 排序）
+// Shared piece value table (centipawns) — used for MVV-LVA ordering and capture-gain estimation
+// Pawn=100, Knight=320, Bishop=330, Rook=500, Queen=900, King=0 (kings do not participate in MVV-LVA ordering)
 constexpr int piece_order_value[PIECE_TYPE_NB] = {
     100, 320, 330, 500, 900, 0
 };
 
 /*
- * see_value — 計算捕獲著法的完整靜態交換評估值
+ * see_value — compute the full static exchange evaluation for a capture move
  *
- * 僅對捕獲著法有效；對非捕獲著法直接回傳 0。
- * 此版本會驗證著法的合法性，適用於非熱路徑（根節點、觀測輸出）。
+ * Only valid for capture moves; returns 0 directly for non-captures.
+ * This version verifies move legality and is suitable for non-hot paths
+ * (root node, observation output).
  *
- * 回傳值：以厘兵 (cp) 為單位的淨交換收益
+ * Returns: net exchange gain in centipawns (cp)
  */
 [[nodiscard]] int see_value(
     const Position& pos,
@@ -77,10 +83,11 @@ constexpr int piece_order_value[PIECE_TYPE_NB] = {
 ) noexcept;
 
 /*
- * see_value_fast — 快速路徑的 SEE 計算
+ * see_value_fast — fast-path SEE computation
  *
- * 假設調用者已確保 move 是合法的捕獲著法（通過 assert 驗證）。
- * 用於 MovePicker 著法評分、qsearch 捕獲排序等熱路徑。
+ * Assumes the caller has already ensured that move is a legal capture
+ * (verified by assert). Used in hot paths such as MovePicker move scoring
+ * and qsearch capture ordering.
  */
 [[nodiscard]] int see_value_fast(
     const Position& pos,
@@ -89,11 +96,12 @@ constexpr int piece_order_value[PIECE_TYPE_NB] = {
 ) noexcept;
 
 /*
- * see_ge — 判斷捕獲著法的 SEE 值是否 >= threshold
+ * see_ge — determine whether a capture move's SEE value is >= threshold
  *
- * 相比 see_value()，此版本有提前退出優化：
- * 當確定交換結果不可能達到閾值時立即停止計算。
- * 廣泛用於捕獲剪枝、late move pruning 等決策。
+ * Compared to see_value(), this version has early-exit optimization:
+ * computation stops as soon as it is determined that the exchange result
+ * cannot possibly reach the threshold.
+ * Widely used for capture pruning, late move pruning, and similar decisions.
  */
 [[nodiscard]] bool see_ge(
     const Position& pos,
@@ -103,10 +111,10 @@ constexpr int piece_order_value[PIECE_TYPE_NB] = {
 ) noexcept;
 
 /*
- * see_ge_fast — 快速路徑的閾值判斷
+ * see_ge_fast — fast-path threshold check
  *
- * 與 see_ge() 相同，但假設 move 為合法捕獲著法。
- * 是搜索熱迴圈中最常用的 SEE 調用形式。
+ * Same as see_ge(), but assumes move is a legal capture.
+ * This is the most commonly used SEE call form in the search hot loop.
  */
 [[nodiscard]] bool see_ge_fast(
     const Position& pos,

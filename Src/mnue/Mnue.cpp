@@ -32,6 +32,7 @@ SOFTWARE.
 #include <bit>
 #include <cassert>
 #include <cmath>
+#include <cstdlib>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -636,8 +637,6 @@ template<class Layout>
 template<class Layout>
 using Accumulator = std::array<i16, Layout::HiddenSize>;
 
-// Stockfish refreshes stale NNUE accumulators from a king-indexed cache.
-// P2-family nets use the same idea with MNUE's coarser input bucket as the key.
 template<class Layout>
 struct P2RefreshEntry {
     Accumulator<Layout> accumulation{};
@@ -1714,7 +1713,7 @@ void refresh_p2_accumulator_from_cache(
 
 template<class Layout>
 struct P2StackStateSet {
-    static constexpr std::size_t Capacity = 132;
+    static constexpr std::size_t Capacity = P2AccumulatorStack::Capacity;
 
     struct alignas(64) State {
         alignas(64) std::array<Accumulator<Layout>, COLOR_NB> accumulation{};
@@ -1746,9 +1745,10 @@ struct P2StackStateSet {
 
     void push(const Position& pos, Move move, u32 current_generation) noexcept {
         sync_generation(current_generation);
-        assert(state_count < states.size());
-        if (state_count >= states.size())
-            return;
+        if (state_count >= states.size()) {
+            assert(false && "P2 accumulator stack overflow");
+            std::abort();
+        }
 
         State& next = states[state_count++];
         next.diff = make_p2_move_diff<Layout>(pos, move);
@@ -1756,9 +1756,11 @@ struct P2StackStateSet {
     }
 
     void pop() noexcept {
-        assert(state_count > 1);
-        if (state_count > 1)
-            --state_count;
+        if (state_count <= 1) {
+            assert(false && "P2 accumulator stack underflow");
+            std::abort();
+        }
+        --state_count;
     }
 
     [[nodiscard]] const Accumulator<Layout>& ensure(

@@ -34,19 +34,19 @@ SOFTWARE.
 #include "TT.h"
 
 /*
- * LMR (延遲著法減免) 實作 — Late Move Reduction
+ * LMR (Late Move Reduction) Implementation
  *
- * 這是搜尋引擎最關鍵的剪枝技術。核心原理：
- *   排序靠後的著法用縮減深度搜索，節省大量節點。
- *   若縮減搜索意外超過 alpha，觸發 re-search 確認。
+ * This is the engine's most critical pruning technique. Core principle:
+ *   Later moves are searched with reduced depth, saving vast numbers of nodes.
+ *   If the reduced search unexpectedly exceeds alpha, a re-search confirms.
  *
- * 減免量使用固定點 (fixed-point) 算術，FP_ONE_PLY=1024 代表 1 個 ply。
- * 基礎減免 = log(depth) * log(move_index)，通過查表實現，
- * 然後根據節點類型、改善狀態、TT 狀態、歷史分數等進行 ± 調整。
+ * Reduction amounts use fixed-point arithmetic; FP_ONE_PLY=1024 represents 1 ply.
+ * Base reduction = log(depth) * log(move_index), implemented via lookup tables,
+ * then adjusted ± based on node type, improving status, TT status, history scores, etc.
  *
- * 兩個公開函數：
- *   decide_lmr()        — 計算減免決策（是否減免、減免量）
- *   lmr_research_depth() — 計算 re-search 深度（減免搜索超過 alpha 時）
+ * Two public functions:
+ *   decide_lmr()        — computes the reduction decision (whether and how much to reduce)
+ *   lmr_research_depth() — computes re-search depth (when reduced search beats alpha)
  */
 namespace magnus::search {
 

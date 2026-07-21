@@ -30,10 +30,10 @@ SOFTWARE.
 #include <string_view>
 
 /*
- * MagnusChessX Thinking 命令列入口點 — 程式啟動與模式派發
+ * MagnusChessX Thinking Command-Line Entry Point — Program Launch and Mode Dispatch
  *
- * 無參數或 "uci" → 啟動 UCI 協定迴圈 (run_uci)
- * "bench"/"perft" → 啟動精簡命令列工具 (run_bench)
+ * No arguments or "uci" → Start UCI protocol loop (run_uci)
+ * "bench"/"perft" → Start lightweight command-line tool (run_bench)
  */
 int main(int argc, char** argv) {
 #ifdef _WIN32

@@ -1,6 +1,6 @@
 ﻿CXX := g++
 CC := gcc
-TARGET := MagXTK-7SM2
+TARGET := MagXTK-14SM1
 
 BUILD_PROFILE ?= auto
 PGO ?= 0
@@ -9,7 +9,7 @@ TARGET_TRIPLE := $(shell $(CXX) -dumpmachine)
 X86_64_TARGET := $(filter x86_64% amd64%,$(TARGET_TRIPLE))
 
 ifeq ($(X86_64_TARGET),)
-  $(error MagXTK-7SM2 64-bit profiles require an x86_64 compiler target; got '$(TARGET_TRIPLE)')
+  $(error MagXTK-14SM1 64-bit profiles require an x86_64 compiler target; got '$(TARGET_TRIPLE)')
 endif
 
 ifeq ($(BUILD_PROFILE),auto)
@@ -246,7 +246,7 @@ DEFAULT_OUTPUT := $(BUILD_DIR)/$(OUTPUT_BASENAME)$(EXEEXT)
 
 # External build systems may call make with EXE=<expected-binary-name>.
 # When EXE is provided, write the final engine exactly there instead of
-# always writing build/MagXTK-7SM2[.exe].
+# always writing build/MagXTK-14SM1[.exe].
 ifeq ($(strip $(EXE)),)
 	OUTPUT := $(DEFAULT_OUTPUT)
 	PGO_OUTPUT := $(BUILD_DIR)/$(TARGET)-$(EFFECTIVE_PROFILE)-pgo$(EXEEXT)
